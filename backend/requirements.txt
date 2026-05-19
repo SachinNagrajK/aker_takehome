@@ -1,0 +1,31 @@
+fastapi==0.115.0
+uvicorn[standard]==0.30.6
+pydantic==2.9.2
+pydantic-settings==2.5.2
+python-dotenv==1.0.1
+
+# DB
+SQLAlchemy==2.0.35
+PyMySQL==1.1.1
+cryptography==43.0.1
+
+# Excel
+pandas==2.2.3
+openpyxl==3.1.5
+
+# Scraping
+requests==2.32.3
+beautifulsoup4==4.12.3
+lxml==5.3.0
+
+# RAG
+chromadb==0.5.15
+
+# Orchestration
+langgraph==0.2.34
+langchain-core==0.3.10
+
+# LLM providers
+openai>=1.55,<3
+anthropic==0.34.2
+google-generativeai==0.8.3

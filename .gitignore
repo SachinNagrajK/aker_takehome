@@ -1,0 +1,45 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
+
+# Env / secrets
+.env
+.env.local
+*.local
+
+# Vector store (binary chroma blobs)
+chroma_db/
+**/chroma_db/
+*.sqlite3
+
+# Node
+node_modules/
+dist/
+.vite/
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# --- Data files (never commit raw rent-roll spreadsheets or processed exports) ---
+# The 300 monthly rent-roll workbooks are large, contain real tenant IDs, and
+# are the input to ingestion — not source code. They live outside the repo and
+# are referenced via RENT_ROLL_DIR in .env.
+*.xls
+*.xlsx
+*.xlsm
+*.csv
+*.parquet
+*.zip
+RentRoll_*/
+data/raw/
+data/processed/
+data/scraped/
