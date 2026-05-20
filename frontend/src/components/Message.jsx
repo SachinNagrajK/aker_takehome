@@ -41,7 +41,16 @@ export default function Message({ msg }) {
               llm: {msg.meta.llm.provider}/{msg.meta.llm.model}
             </span>
           )}
+          {msg.meta.scope_kind === 'compare' && msg.meta.property_codes?.length > 0 && (
+            <span className="tag">compare: {msg.meta.property_codes.join(' ↔ ')}</span>
+          )}
+          {msg.meta.scope_kind === 'single' && msg.meta.property_code && msg.meta.scope_source && (
+            <span className={`tag ${msg.meta.scope_source === 'resumed' ? 'scope-resumed' : ''}`}>
+              scope: {msg.meta.property_code} ({msg.meta.scope_source})
+            </span>
+          )}
           {msg.meta.scope_enforced && <span className="tag">scope ✓</span>}
+          {msg.meta.gave_up && <span className="tag gave-up">gave up</span>}
         </div>
       )}
     </div>

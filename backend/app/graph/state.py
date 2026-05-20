@@ -1,35 +1,61 @@
-"""LangGraph state schema.
+"""LangGraph state schema (v2 rewrite).
 
-Every node reads from and writes to this TypedDict. `property_code` is the
-load-bearing field — present at the entry point and read by every node.
+This is the canonical MessagesState pattern: the LLM conversation is a
+single list of messages with the `add_messages` reducer. The agent node
+appends `AIMessage`s (some carrying `tool_calls`); the tools node appends
+`ToolMessage`s with results.
+
+`tool_history` is kept as a *parallel* collection for the UI's Tool Trace
+panel — it stores full tool results that we deliberately truncate when
+serialised into `ToolMessage.content` to keep prompt budgets sane.
 """
 from __future__ import annotations
 
-from typing import Any, Literal, TypedDict
+from operator import add
+from typing import Annotated, Any, TypedDict
+
+from langchain_core.messages import BaseMessage
+from langgraph.graph.message import add_messages
 
 
-Route = Literal["sql", "rag", "hybrid"]
+class ToolStep(TypedDict, total=False):
+    tool: str
+    args: dict[str, Any]
+    ok: bool
+    result: Any                 # full result, dict-typed for the UI
+    error: str | None
+    duration_ms: int | None
+    tool_call_id: str | None
 
 
 class ChatState(TypedDict, total=False):
-    # --- inputs ---
-    property_code: str
-    property_name: str
+    # --- conversation (canonical) ---
+    messages: Annotated[list[BaseMessage], add_messages]
+
+    # --- inputs / context ---
     user_message: str
+    dropdown_property_code: str | None
     llm_provider: str
     model: str
+    conversation_id: str | None
 
-    # --- routing decision ---
-    route: Route
-    sql_tool: str | None        # e.g. "get_rent_trend"
-    sql_args: dict[str, Any]    # kwargs for the picked tool
+    # --- resolved scope ---
+    scope: dict[str, Any]
+    property_name: str | None
 
-    # --- tool outputs ---
-    sql_result: dict[str, Any] | None
-    rag_chunks: list[dict[str, Any]]
-    rag_sources: list[dict[str, str]]
+    # --- loop control ---
+    turn_count: int             # number of agent turns taken
+    max_turns: int              # hard cap (default 8)
 
-    # --- final outputs ---
+    # --- clarification flow (LangGraph interrupt) ---
+    clarification: dict[str, Any] | None   # set by clarify_router
+
+    # --- parallel trace for UI (full tool results, not truncated) ---
+    tool_history: Annotated[list[ToolStep], add]
+
+    # --- final outputs (filled by compose) ---
     answer_markdown: str
     components: list[dict[str, Any]]
     sources: list[dict[str, str]]
+    route: str                  # "sql" | "rag" | "hybrid" | "agent"
+    gave_up: bool

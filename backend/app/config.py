@@ -20,6 +20,12 @@ class Settings:
     mysql_password: str = os.getenv("MYSQL_PASSWORD", "property_pass")
     mysql_db: str = os.getenv("MYSQL_DB", "property_ai")
 
+    # Read-only DB user — used only by the LLM-written SQL executor.
+    # Lacks INSERT/UPDATE/DELETE/DDL privileges at the MySQL level even if
+    # the sqlglot validator is bypassed.
+    mysql_reader_user: str = os.getenv("MYSQL_READER_USER", "property_reader")
+    mysql_reader_password: str = os.getenv("MYSQL_READER_PASSWORD", "reader_pass")
+
     # LLM keys
     openai_api_key: str | None = os.getenv("OPENAI_API_KEY") or None
     anthropic_api_key: str | None = os.getenv("ANTHROPIC_API_KEY") or None
@@ -43,6 +49,14 @@ class Settings:
     def sqlalchemy_url(self) -> str:
         return (
             f"mysql+pymysql://{self.mysql_user}:{self.mysql_password}"
+            f"@{self.mysql_host}:{self.mysql_port}/{self.mysql_db}?charset=utf8mb4"
+        )
+
+    @property
+    def sqlalchemy_reader_url(self) -> str:
+        """Connection string for the read-only DB user."""
+        return (
+            f"mysql+pymysql://{self.mysql_reader_user}:{self.mysql_reader_password}"
             f"@{self.mysql_host}:{self.mysql_port}/{self.mysql_db}?charset=utf8mb4"
         )
 

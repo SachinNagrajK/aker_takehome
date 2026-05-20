@@ -138,6 +138,107 @@ def from_expiring_leases(r: dict[str, Any]) -> list[dict]:
     }]
 
 
+def from_compare_units(r: dict[str, Any]) -> list[dict]:
+    """Grouped bar chart for intra-property unit-vs-unit comparison."""
+    series = r.get("series") or []
+    rows = r.get("rows") or []
+    unit_numbers = r.get("unit_numbers") or [row["unit_number"] for row in rows]
+    if not series or not unit_numbers:
+        return []
+    # Recharts expects an array of objects keyed by category.
+    chart_rows = []
+    for s in series:
+        row = {"dimension": s["dimension"]}
+        for u in unit_numbers:
+            row[u] = s["values"].get(u)
+        chart_rows.append(row)
+    return [{
+        "type": "comparison_chart",
+        "title": "Unit Comparison",
+        "data": {
+            "categories": unit_numbers,
+            "rows": chart_rows,
+        },
+    }]
+
+
+def from_compare_properties(r: dict[str, Any]) -> list[dict]:
+    """Grouped bar chart for cross-property aggregate."""
+    results = r.get("results") or []
+    if not results:
+        return []
+    dim = r.get("dimension") or "value"
+    chart_rows = [{
+        "dimension": dim,
+        **{res["property_code"]: res.get("value") for res in results},
+    }]
+    return [{
+        "type": "comparison_chart",
+        "title": f"Property Comparison · {dim}",
+        "data": {
+            "categories": [res["property_code"] for res in results],
+            "rows": chart_rows,
+        },
+    }]
+
+
+def from_unit_charges(r: dict[str, Any]) -> list[dict]:
+    """Per-line-item table for one unit + summary by charge code."""
+    lines = r.get("lines") or []
+    summary = r.get("summary_by_code") or []
+    components: list[dict] = []
+    if lines:
+        components.append({
+            "type": "table",
+            "title": f"Charge Lines · {r.get('unit_number')} ({r.get('snapshot_month')})",
+            "data": {
+                "columns": ["Line", "Charge Code", "Amount"],
+                "rows": [
+                    [ln["line_index"], ln["charge_code"], _fmt_money(ln.get("amount"))]
+                    for ln in lines
+                ],
+            },
+        })
+    # Surface multi-line charge codes prominently in a summary table.
+    multi = [s for s in summary if s.get("count", 0) > 1]
+    if multi:
+        components.append({
+            "type": "table",
+            "title": "Multi-Line Charges (count > 1)",
+            "data": {
+                "columns": ["Charge Code", "# Lines", "Amounts", "Total"],
+                "rows": [
+                    [s["charge_code"], s["count"],
+                     ", ".join(_fmt_money(a) for a in s.get("amounts", [])),
+                     _fmt_money(s.get("total"))]
+                    for s in multi
+                ],
+            },
+        })
+    return components
+
+
+def from_list_units(r: dict[str, Any]) -> list[dict]:
+    rows = r.get("rows") or []
+    if not rows:
+        return []
+    return [{
+        "type": "table",
+        "title": f"Units matching filters ({r.get('row_count')} found)",
+        "data": {
+            "columns": ["Unit", "Type", "Sqft", "Market Rent", "Monthly Rent", "Lease End", "Occupied"],
+            "rows": [
+                [row.get("unit_number"), row.get("unit_type"), row.get("sqft"),
+                 _fmt_money(row.get("market_rent")),
+                 _fmt_money(row.get("monthly_rent")),
+                 row.get("lease_end") or "—",
+                 "Yes" if row.get("occupied") else "No"]
+                for row in rows
+            ],
+        },
+    }]
+
+
 def from_top_balances(r: dict[str, Any]) -> list[dict]:
     rows = r.get("rows") or []
     if not rows:
@@ -169,6 +270,11 @@ BUILDERS = {
     "get_rent_trend":       from_rent_trend,
     "get_expiring_leases":  from_expiring_leases,
     "get_top_balances":     from_top_balances,
+    # v2 additions
+    "get_unit_charges":     from_unit_charges,
+    "compare_units":        from_compare_units,
+    "compare_properties":   from_compare_properties,
+    "list_units":           from_list_units,
 }
 
 

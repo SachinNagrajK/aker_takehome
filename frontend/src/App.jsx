@@ -5,6 +5,14 @@ import LLMSelector from './components/LLMSelector.jsx'
 import Composer from './components/Composer.jsx'
 import Message from './components/Message.jsx'
 import ComponentRenderer from './components/ComponentRenderer.jsx'
+import ClarificationCard from './components/ClarificationCard.jsx'
+import ToolTrace from './components/ToolTrace.jsx'
+
+// Generate a per-conversation id so the backend can resume interrupted
+// graph runs (LangGraph checkpointer thread_id).
+function genConversationId() {
+  return (crypto?.randomUUID?.() || `${Date.now()}-${Math.random().toString(36).slice(2)}`)
+}
 
 const SUGGESTIONS = [
   'What is the average rent and occupancy?',
@@ -23,6 +31,10 @@ export default function App() {
   const [messages, setMessages] = useState([])
   const [components, setComponents] = useState([])
   const [sources, setSources] = useState([])
+  const [toolTrace, setToolTrace] = useState([])
+  const [pendingClarification, setPendingClarification] = useState(null)
+  const [conversationId, setConversationId] = useState(genConversationId())
+  const [lastUserMessage, setLastUserMessage] = useState('')
   const [busy, setBusy] = useState(false)
   const [bootError, setBootError] = useState(null)
   const scrollRef = useRef(null)
@@ -49,11 +61,14 @@ export default function App() {
     if (el) el.scrollTop = el.scrollHeight
   }, [messages])
 
-  // Whenever property changes, clear the chat and component pane.
+  // Whenever property changes, clear the chat, components, and conversation.
   useEffect(() => {
     setMessages([])
     setComponents([])
     setSources([])
+    setToolTrace([])
+    setPendingClarification(null)
+    setConversationId(genConversationId())
   }, [propertyCode])
 
   const activeProperty = useMemo(
@@ -61,9 +76,41 @@ export default function App() {
     [properties, propertyCode],
   )
 
+  function applyChatResponse(res, replaceLastThinking = true) {
+    if (res.clarification) {
+      // Paused at an interrupt — render the question, don't push a final reply.
+      setPendingClarification(res.clarification)
+      setMessages((m) => (replaceLastThinking ? m.slice(0, -1) : m))
+      return
+    }
+    setPendingClarification(null)
+    setMessages((m) => {
+      const next = replaceLastThinking ? m.slice(0, -1) : m
+      next.push({
+        role: 'assistant',
+        content: res.answer_markdown,
+        meta: {
+          route: res.route,
+          llm: res.llm,
+          scope_enforced: res.scope_enforced,
+          scope_kind: res.scope_kind,
+          scope_source: res.scope_source,
+          property_code: res.property_code,
+          property_codes: res.property_codes,
+          gave_up: res.gave_up,
+        },
+      })
+      return next
+    })
+    setComponents(res.components || [])
+    setSources(res.sources || [])
+    setToolTrace(res.tool_trace || [])
+  }
+
   async function handleSend(text) {
-    if (!propertyCode || !llm) return
+    if (!llm) return
     setBusy(true)
+    setLastUserMessage(text)
     setMessages((m) => [
       ...m,
       { role: 'user', content: text },
@@ -71,22 +118,43 @@ export default function App() {
     ])
     try {
       const res = await api.chat({
-        property_code: propertyCode,
+        property_code: propertyCode || null,
         message: text,
         llm_provider: llm.provider,
         model: llm.model,
+        conversation_id: conversationId,
       })
+      applyChatResponse(res)
+    } catch (e) {
       setMessages((m) => {
-        const next = m.slice(0, -1) // drop the thinking placeholder
-        next.push({
-          role: 'assistant',
-          content: res.answer_markdown,
-          meta: { route: res.route, llm: res.llm, scope_enforced: res.scope_enforced },
-        })
+        const next = m.slice(0, -1)
+        next.push({ role: 'error', content: e.message })
         return next
       })
-      setComponents(res.components || [])
-      setSources(res.sources || [])
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  async function handleClarificationReply(choice) {
+    if (!choice || !llm) return
+    setBusy(true)
+    setPendingClarification(null)
+    setMessages((m) => [
+      ...m,
+      { role: 'user', content: `(chose ${choice})` },
+      { role: 'thinking' },
+    ])
+    try {
+      const res = await api.chat({
+        property_code: propertyCode || null,
+        message: lastUserMessage,
+        llm_provider: llm.provider,
+        model: llm.model,
+        conversation_id: conversationId,
+        clarification_reply: choice,
+      })
+      applyChatResponse(res)
     } catch (e) {
       setMessages((m) => {
         const next = m.slice(0, -1)
@@ -145,26 +213,36 @@ export default function App() {
             {messages.map((msg, i) => <Message key={i} msg={msg} />)}
           </div>
 
-          <div className="suggestions">
-            {SUGGESTIONS.map((s) => (
-              <button
-                key={s}
-                className="chip"
-                disabled={busy}
-                onClick={() => handleSend(s)}
-                style={{ background: 'transparent', color: 'inherit', padding: '6px 12px', border: '1px solid var(--border)' }}
-              >
-                {s}
-              </button>
-            ))}
-          </div>
+          {pendingClarification && (
+            <ClarificationCard
+              clarification={pendingClarification}
+              onReply={handleClarificationReply}
+              disabled={busy}
+            />
+          )}
 
-          <Composer disabled={busy} onSend={handleSend} />
+          {!pendingClarification && (
+            <div className="suggestions">
+              {SUGGESTIONS.map((s) => (
+                <button
+                  key={s}
+                  className="chip"
+                  disabled={busy}
+                  onClick={() => handleSend(s)}
+                  style={{ background: 'transparent', color: 'inherit', padding: '6px 12px', border: '1px solid var(--border)' }}
+                >
+                  {s}
+                </button>
+              ))}
+            </div>
+          )}
+
+          <Composer disabled={busy || !!pendingClarification} onSend={handleSend} />
         </div>
 
         <div className="components-pane">
-          {components.length === 0 && sources.length === 0 ? (
-            <div className="empty">Components and sources will appear here.</div>
+          {components.length === 0 && sources.length === 0 && toolTrace.length === 0 ? (
+            <div className="empty">Components, sources, and tool trace will appear here.</div>
           ) : (
             <>
               {components.map((c, i) => (
@@ -180,6 +258,7 @@ export default function App() {
                   ))}
                 </div>
               )}
+              {toolTrace.length > 0 && <ToolTrace steps={toolTrace} />}
             </>
           )}
         </div>

@@ -193,8 +193,15 @@ def parse_rent_roll_file(path: Path) -> ParsedFile:
     current: dict | None = None
 
     def _record_charge(block: dict, code_upper: str, amount: float) -> None:
-        # Multiple rent codes per block are rare but possible (2/8370 in audit).
-        # Sum them — same is safe for a unit that only has one.
+        # Append a granular line item AND update the summary dict.
+        # `charge_lines` preserves multiplicity (e.g. two PARKING rows
+        # appearing separately); the dict gives an O(1) per-code total.
+        line_index = len(block["charge_lines"])
+        block["charge_lines"].append({
+            "line_index": line_index,
+            "charge_code": code_upper,
+            "amount": amount,
+        })
         block["charges"][code_upper] = block["charges"].get(code_upper, 0.0) + amount
         if code_upper in RENT_CHARGE_CODES:
             block["monthly_rent"] = (block["monthly_rent"] or 0.0) + amount
@@ -248,7 +255,8 @@ def parse_rent_roll_file(path: Path) -> ParsedFile:
                 "move_out": _to_date(row.iat[COL_MOVE_OUT]),
                 "balance": _to_float(row.iat[COL_BALANCE]),
                 "monthly_rent": None,
-                "charges": {},
+                "charges": {},        # per-code totals (summary)
+                "charge_lines": [],   # ordered per-line items (granular truth)
             }
             cc = _str(row.iat[COL_CHARGE_CODE])
             amt = _to_float(row.iat[COL_AMOUNT])
@@ -270,7 +278,8 @@ def parse_rent_roll_file(path: Path) -> ParsedFile:
             if amt is not None:
                 _record_charge(current, cc_u, amt)
 
-    # Build snapshot rows (one per unit).
+    # Build snapshot rows (one per unit). `charge_lines` rides along so the
+    # writer can persist them in the new rent_charge_lines table.
     for u in result.units:
         charges = u["charges"]
         concessions = sum(v for k, v in charges.items() if k in CONCESSION_CODES)
@@ -281,6 +290,7 @@ def parse_rent_roll_file(path: Path) -> ParsedFile:
             "unit_number": u["unit_number"],
             "monthly_rent": u["monthly_rent"],
             "occupied": u["occupied"],
+            "charge_lines": u["charge_lines"],  # NEW: per-line items in source order
             "raw_row": {
                 "charges": charges,
                 "market_rent": u["market_rent"],
@@ -314,8 +324,24 @@ def _upsert_property(session, code: str, name: str) -> None:
     session.execute(stmt)
 
 
-def _replace_snapshot(session, code: str, month: date, rows: list[dict]) -> None:
-    """Delete + insert all rent_snapshot rows for (code, month). Idempotent."""
+def _replace_snapshot(session, code: str, month: date, rows: list[dict]) -> int:
+    """Delete + insert all rent_snapshot rows for (code, month). Idempotent.
+
+    Also rewrites rent_charge_lines for this (code, month). Returns the
+    number of charge lines written so the caller can report a summary.
+
+    ON DELETE CASCADE on rent_charge_lines.snapshot_id means the explicit
+    rent_snapshot delete also clears its lines — but we issue an explicit
+    delete on rent_charge_lines too in case any orphans exist from a
+    previous bulk-insert path.
+    """
+    # 1) Wipe existing rows for this (code, month).
+    session.execute(
+        delete(models.RentChargeLine).where(
+            models.RentChargeLine.property_code == code,
+            models.RentChargeLine.snapshot_month == month,
+        )
+    )
     session.execute(
         delete(models.RentSnapshot).where(
             models.RentSnapshot.property_code == code,
@@ -323,19 +349,38 @@ def _replace_snapshot(session, code: str, month: date, rows: list[dict]) -> None
         )
     )
     if not rows:
-        return
-    payload = [
-        {
-            "property_code": code,
-            "snapshot_month": month,
-            "unit_number": r["unit_number"],
-            "monthly_rent": r["monthly_rent"],
-            "occupied": r["occupied"],
-            "raw_row": r["raw_row"],
-        }
-        for r in rows
-    ]
-    session.bulk_insert_mappings(models.RentSnapshot, payload)
+        return 0
+
+    # 2) Insert snapshots one-by-one so we can capture each PK to associate
+    #    its charge lines. bulk_insert_mappings doesn't return PKs reliably
+    #    across DBs, and we need them for the FK.
+    line_payload: list[dict] = []
+    for r in rows:
+        snap = models.RentSnapshot(
+            property_code=code,
+            snapshot_month=month,
+            unit_number=r["unit_number"],
+            monthly_rent=r["monthly_rent"],
+            occupied=r["occupied"],
+            raw_row=r["raw_row"],
+        )
+        session.add(snap)
+        session.flush()  # populates snap.id
+        for cl in r.get("charge_lines", []):
+            line_payload.append({
+                "snapshot_id": snap.id,
+                "property_code": code,
+                "snapshot_month": month,
+                "unit_number": r["unit_number"],
+                "line_index": cl["line_index"],
+                "charge_code": cl["charge_code"],
+                "amount": cl["amount"],
+            })
+
+    if line_payload:
+        session.bulk_insert_mappings(models.RentChargeLine, line_payload)
+
+    return len(line_payload)
 
 
 def _refresh_units_and_leases(session, code: str, latest_units: list[dict]) -> None:
@@ -390,7 +435,7 @@ def ingest_directory(rent_roll_dir: Path) -> None:
     from app.db import init_db
     init_db()
 
-    n_props = n_snap_rows = 0
+    n_props = n_snap_rows = n_line_rows = 0
     with session_scope() as session:
         for i, path in enumerate(files, 1):
             try:
@@ -400,7 +445,7 @@ def ingest_directory(rent_roll_dir: Path) -> None:
                 continue
 
             _upsert_property(session, pf.property_code, pf.property_name)
-            _replace_snapshot(session, pf.property_code, pf.snapshot_month, pf.rows)
+            n_line_rows += _replace_snapshot(session, pf.property_code, pf.snapshot_month, pf.rows)
             parsed_by_code.setdefault(pf.property_code, []).append(pf)
             n_snap_rows += len(pf.rows)
 
@@ -417,6 +462,7 @@ def ingest_directory(rent_roll_dir: Path) -> None:
     print(f"Properties loaded:   {n_props}")
     print(f"Files ingested:      {sum(len(v) for v in parsed_by_code.values())}")
     print(f"Snapshot rows:       {n_snap_rows}")
+    print(f"Charge-line rows:    {n_line_rows}")
     print(f"Property codes:      {', '.join(sorted(parsed_by_code))}")
 
 

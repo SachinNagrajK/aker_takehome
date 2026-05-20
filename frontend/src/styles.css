@@ -344,3 +344,121 @@ select:focus, input:focus, textarea:focus {
   .main { grid-template-columns: 1fr; }
   .components-pane { display: none; }
 }
+
+/* ===== Clarification card ===== */
+.clarification-card {
+  margin: 0 20px 12px;
+  background: #1d2737;
+  border: 1px solid #2c4a82;
+  border-radius: var(--radius);
+  padding: 14px 16px;
+}
+.clarification-title {
+  font-size: 11px;
+  color: #9bb5e0;
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+  margin-bottom: 6px;
+}
+.clarification-question {
+  font-size: 14px;
+  margin-bottom: 12px;
+  line-height: 1.5;
+}
+.clarification-options {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 10px;
+}
+.clarification-option {
+  background: var(--accent);
+  color: white;
+  border: none;
+  border-radius: 8px;
+  padding: 8px 14px;
+  font-size: 13px;
+  cursor: pointer;
+}
+.clarification-option:hover:not(:disabled) { background: #6b9eff; }
+.clarification-option:disabled { opacity: 0.5; cursor: not-allowed; }
+.clarification-freeform {
+  display: flex;
+  gap: 8px;
+  margin-top: 6px;
+}
+.clarification-freeform input {
+  flex: 1;
+  font-size: 13px;
+}
+
+/* ===== Tool trace ===== */
+.tool-trace {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 12px 14px;
+  margin-bottom: 12px;
+}
+.tool-trace-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 12px;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+}
+.tool-trace-err { color: var(--danger); text-transform: none; }
+.tool-trace-list {
+  list-style: none;
+  margin: 10px 0 0;
+  padding: 0;
+}
+.tool-trace-step {
+  border-left: 2px solid var(--border);
+  padding: 6px 0 6px 10px;
+  margin-bottom: 8px;
+  font-size: 12px;
+}
+.tool-trace-step.ok { border-left-color: var(--success); }
+.tool-trace-step.err { border-left-color: var(--danger); }
+.tool-trace-line {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+}
+.tool-trace-name {
+  background: var(--panel-2);
+  padding: 2px 6px;
+  border-radius: 4px;
+}
+.tool-trace-status {
+  font-weight: 600;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+}
+.tool-trace-step.ok .tool-trace-status { color: var(--success); }
+.tool-trace-step.err .tool-trace-status { color: var(--danger); }
+.tool-trace-dur { color: var(--muted); font-size: 11px; }
+.tool-trace-args {
+  margin-top: 4px;
+  font-family: -apple-system, monospace;
+  font-size: 11px;
+  color: var(--muted);
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.tool-trace-args b { color: var(--text); font-weight: 500; }
+.tool-trace-error {
+  margin-top: 4px;
+  color: #ffb4ad;
+  font-size: 11px;
+  font-family: -apple-system, monospace;
+}
+
+/* ===== Extra scope badges on messages ===== */
+.tag.gave-up { background: #311a1a; border-color: var(--danger); color: #ffb4ad; }
+.tag.scope-resumed { background: #1d2737; border-color: #2c4a82; color: #cfe0ff; }

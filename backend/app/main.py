@@ -16,6 +16,7 @@ Errors are translated centrally:
 from __future__ import annotations
 
 import logging
+import uuid
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import select
@@ -23,7 +24,10 @@ from sqlalchemy import select
 from .config import get_settings
 from .db import init_db, session_scope
 from .models import Property
-from .schemas import ChatRequest, ChatResponse, LLMOption, PropertyOut, Source, UIComponent
+from .schemas import (
+    ChatRequest, ChatResponse, Clarification, LLMOption,
+    PropertyOut, Source, ToolTraceStep, UIComponent,
+)
 from .guardrails.scope import UnknownPropertyError, ScopeViolationError
 from .llm.base import ProviderUnavailable
 from .llm.factory import list_llms, validate_model
@@ -96,13 +100,27 @@ def chat(req: ChatRequest) -> ChatResponse:
     except ProviderUnavailable as e:
         raise HTTPException(status_code=400, detail=str(e))
 
+    conversation_id = req.conversation_id or str(uuid.uuid4())
+
     try:
-        state = run_chat(
-            property_code=req.property_code,
-            user_message=req.message,
-            llm_provider=req.llm_provider,
-            model=req.model,
-        )
+        if req.clarification_reply is not None:
+            # Resume an interrupted graph run with the user's chosen scope.
+            state = run_chat(
+                property_code=req.property_code,
+                user_message=req.message,
+                llm_provider=req.llm_provider,
+                model=req.model,
+                conversation_id=conversation_id,
+                resume_value=req.clarification_reply,
+            )
+        else:
+            state = run_chat(
+                property_code=req.property_code,
+                user_message=req.message,
+                llm_provider=req.llm_provider,
+                model=req.model,
+                conversation_id=conversation_id,
+            )
     except UnknownPropertyError as e:
         raise HTTPException(status_code=404, detail=str(e))
     except ScopeViolationError as e:
@@ -115,12 +133,46 @@ def chat(req: ChatRequest) -> ChatResponse:
         log.exception("chat pipeline failed")
         raise HTTPException(status_code=500, detail=f"Internal error: {e}")
 
+    # Paused at a clarification interrupt — surface that to the frontend.
+    if state.get("paused"):
+        clar = state.get("clarification") or {}
+        return ChatResponse(
+            scope_kind=(state.get("scope") or {}).get("kind", "missing"),
+            scope_enforced=True,
+            answer_markdown="",
+            llm={"provider": req.llm_provider, "model": req.model},
+            clarification=Clarification(
+                question=clar.get("question", "Which property?"),
+                options=clar.get("options") or [],
+                scope_kind=clar.get("scope_kind"),
+            ),
+            conversation_id=conversation_id,
+        )
+
+    scope = state.get("scope") or {}
+    tool_history = state.get("tool_history") or []
+
     return ChatResponse(
-        property_code=state["property_code"],
+        property_code=scope.get("code"),
+        property_codes=scope.get("codes") or [],
+        scope_kind=scope.get("kind", "single"),
+        scope_source=scope.get("source"),
         scope_enforced=True,
         answer_markdown=state.get("answer_markdown", ""),
         components=[UIComponent(**c) for c in state.get("components", [])],
         sources=[Source(**s) for s in state.get("sources", [])],
-        route=state.get("route", "sql"),
+        tool_trace=[
+            ToolTraceStep(
+                tool=s.get("tool"),
+                args=s.get("args") or {},
+                ok=bool(s.get("ok")),
+                error=s.get("error"),
+                duration_ms=s.get("duration_ms"),
+            )
+            for s in tool_history
+        ],
+        route=state.get("route", "agent"),
+        gave_up=bool(state.get("gave_up")),
         llm={"provider": req.llm_provider, "model": req.model},
+        conversation_id=conversation_id,
     )

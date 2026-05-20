@@ -69,7 +69,33 @@ class RentSnapshot(Base):
     raw_row: Mapped[dict | None] = mapped_column(JSON, nullable=True)
 
     property: Mapped[Property] = relationship(back_populates="snapshots")
+    charge_lines: Mapped[list["RentChargeLine"]] = relationship(back_populates="snapshot", cascade="all, delete-orphan")
 
     __table_args__ = (
         Index("ix_snap_code_month_unit", "property_code", "snapshot_month", "unit_number"),
+    )
+
+
+class RentChargeLine(Base):
+    """One row per charge line within a unit block.
+
+    Preserves the granularity that `RentSnapshot.raw_row.charges` lost — that
+    dict sums charges per code, so two PARKING lines of $75 and $100 collapsed
+    into a single $175. This table keeps every line item with its position
+    (`line_index`) so the agent can answer "list the individual parking fees".
+    """
+    __tablename__ = "rent_charge_lines"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    snapshot_id: Mapped[int] = mapped_column(Integer, ForeignKey("rent_snapshots.id", ondelete="CASCADE"), index=True)
+    property_code: Mapped[str] = mapped_column(String(32), ForeignKey("properties.property_code"), index=True)
+    snapshot_month: Mapped[date] = mapped_column(Date, index=True)
+    unit_number: Mapped[str] = mapped_column(String(64))
+    line_index: Mapped[int] = mapped_column(Integer)
+    charge_code: Mapped[str] = mapped_column(String(32), index=True)
+    amount: Mapped[float | None] = mapped_column(Float, nullable=True)
+
+    snapshot: Mapped["RentSnapshot"] = relationship(back_populates="charge_lines")
+
+    __table_args__ = (
+        Index("ix_charge_code_month_unit", "property_code", "snapshot_month", "unit_number"),
     )

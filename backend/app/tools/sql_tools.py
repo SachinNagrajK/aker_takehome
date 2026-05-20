@@ -326,6 +326,306 @@ def get_top_balances(property_code: str, n: int = 10) -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
+# 7. Unit charges — every line item for one unit (preserves multiplicity)
+# ---------------------------------------------------------------------------
+
+def get_unit_charges(
+    property_code: str,
+    unit_number: str,
+    snapshot_month: str | None = None,
+) -> dict[str, Any]:
+    """List every charge line for a unit in source order.
+
+    Unlike `raw_row.charges` (which sums by code), this surfaces each row
+    distinctly — so two PARKING lines of $75 and $100 appear as two entries.
+    """
+    code = require_scope(property_code)
+    if not unit_number:
+        return {"property_code": code, "error": "unit_number is required"}
+
+    with session_scope() as s:
+        if snapshot_month:
+            try:
+                y, m = snapshot_month.split("-")[:2]
+                month_date = date(int(y), int(m), 1)
+            except (ValueError, AttributeError):
+                return {"property_code": code, "error": f"Invalid snapshot_month: {snapshot_month!r}"}
+        else:
+            month_date = s.execute(
+                text("""
+                    SELECT MAX(snapshot_month) FROM rent_charge_lines
+                    WHERE property_code = :code AND unit_number = :unit
+                """),
+                {"code": code, "unit": unit_number},
+            ).scalar()
+            if month_date is None:
+                return {
+                    "property_code": code, "unit_number": unit_number,
+                    "found": False,
+                    "note": f"No charge lines for unit {unit_number} in {code}.",
+                }
+
+        rows = _rows_to_dicts(s.execute(
+            text("""
+                SELECT line_index, charge_code, amount
+                FROM rent_charge_lines
+                WHERE property_code = :code
+                  AND unit_number = :unit
+                  AND snapshot_month = :month
+                ORDER BY line_index
+            """),
+            {"code": code, "unit": unit_number, "month": month_date},
+        ))
+
+        # Roll up: how many lines per code? Helps the LLM say
+        # "there are 2 PARKING lines: $75 and $100".
+        per_code: dict[str, list[float]] = {}
+        for r in rows:
+            per_code.setdefault(r["charge_code"], []).append(float(r["amount"]) if r["amount"] is not None else 0.0)
+        summary = [
+            {"charge_code": code_name, "count": len(amts),
+             "amounts": amts, "total": round(sum(amts), 2)}
+            for code_name, amts in sorted(per_code.items(), key=lambda kv: -sum(kv[1]))
+        ]
+
+    return {
+        "property_code": code,
+        "unit_number": unit_number,
+        "snapshot_month": month_date.isoformat() if month_date else None,
+        "found": bool(rows),
+        "line_count": len(rows),
+        "lines": [
+            {"line_index": r["line_index"],
+             "charge_code": r["charge_code"],
+             "amount": float(r["amount"]) if r["amount"] is not None else None}
+            for r in rows
+        ],
+        "summary_by_code": summary,
+    }
+
+
+# ---------------------------------------------------------------------------
+# 8. Compare units within one property
+# ---------------------------------------------------------------------------
+
+_COMPARE_UNIT_DIMENSIONS = {
+    "rent": "monthly_rent",
+    "monthly_rent": "monthly_rent",
+    "market_rent": "market_rent",
+    "sqft": "sqft",
+    "balance": "balance",
+    "bedrooms": "bedrooms",
+    "bathrooms": "bathrooms",
+}
+
+
+def compare_units(
+    property_code: str,
+    unit_numbers: list[str],
+    dimensions: list[str] | None = None,
+) -> dict[str, Any]:
+    """Side-by-side comparison of 2+ units within a property.
+
+    Returns rent, sqft, market_rent, unit_type, lease_end and balance for
+    each unit by default. `dimensions` filters which fields appear (the
+    response composer uses this for the comparison chart).
+    """
+    code = require_scope(property_code)
+    if not unit_numbers or len(unit_numbers) < 2:
+        return {"property_code": code, "error": "compare_units requires at least 2 unit_numbers"}
+
+    dims = [d.lower() for d in (dimensions or ["rent", "sqft", "market_rent"])]
+    invalid = [d for d in dims if d not in _COMPARE_UNIT_DIMENSIONS]
+    if invalid:
+        return {
+            "property_code": code,
+            "error": f"Unknown dimension(s): {invalid}. Valid: {list(_COMPARE_UNIT_DIMENSIONS)}",
+        }
+
+    with session_scope() as s:
+        # Pull units + their latest lease metadata in one go.
+        rows = _rows_to_dicts(s.execute(
+            text(f"""
+                SELECT u.unit_number, u.unit_type, u.sqft, u.bedrooms, u.bathrooms,
+                       u.market_rent,
+                       l.monthly_rent, l.balance, l.lease_end, l.tenant_id, l.status
+                FROM units u
+                LEFT JOIN leases l
+                  ON l.property_code = u.property_code AND l.unit_number = u.unit_number
+                WHERE u.property_code = :code
+                  AND u.unit_number IN :units
+            """).bindparams(
+                __import__("sqlalchemy").bindparam("units", expanding=True)
+            ),
+            {"code": code, "units": list(unit_numbers)},
+        ))
+
+    found_units = {r["unit_number"] for r in rows}
+    missing = [u for u in unit_numbers if u not in found_units]
+
+    # Reshape for charting: list of {dimension: {unit_number: value}}.
+    series = []
+    for dim in dims:
+        col = _COMPARE_UNIT_DIMENSIONS[dim]
+        series.append({
+            "dimension": dim,
+            "values": {r["unit_number"]: r.get(col) for r in rows},
+        })
+
+    return {
+        "property_code": code,
+        "unit_numbers": unit_numbers,
+        "dimensions": dims,
+        "missing": missing,
+        "rows": [_stringify_dates(r) for r in rows],
+        "series": series,
+    }
+
+
+# ---------------------------------------------------------------------------
+# 9. Compare properties (cross-property aggregate)
+# ---------------------------------------------------------------------------
+
+_COMPARE_PROPERTY_DIMS = {
+    "avg_rent": "AVG(CASE WHEN monthly_rent > 0 THEN monthly_rent END)",
+    "total_units": "COUNT(*)",
+    "occupied_units": "SUM(CASE WHEN occupied THEN 1 ELSE 0 END)",
+    "occupancy_pct": (
+        "ROUND(100.0 * SUM(CASE WHEN occupied THEN 1 ELSE 0 END) / NULLIF(COUNT(*),0), 1)"
+    ),
+    "rent_roll_total": "SUM(CASE WHEN monthly_rent > 0 THEN monthly_rent END)",
+}
+
+
+def compare_properties(
+    property_codes: list[str],
+    dimension: str = "avg_rent",
+    month: str | None = None,
+) -> dict[str, Any]:
+    """Aggregate one dimension across multiple properties.
+
+    Scope is the *list* of codes — every one is validated by require_scope.
+    Defaults to the latest month per property.
+    """
+    if not property_codes or len(property_codes) < 2:
+        return {"error": "compare_properties requires at least 2 property_codes"}
+    codes = [require_scope(c) for c in property_codes]
+    dim = (dimension or "avg_rent").lower()
+    if dim not in _COMPARE_PROPERTY_DIMS:
+        return {
+            "error": f"Unknown dimension: {dim}. Valid: {list(_COMPARE_PROPERTY_DIMS)}",
+        }
+    agg_expr = _COMPARE_PROPERTY_DIMS[dim]
+
+    # Resolve target month per code (latest if unspecified).
+    with session_scope() as s:
+        results = []
+        for code in codes:
+            if month:
+                try:
+                    y, m = month.split("-")[:2]
+                    month_date = date(int(y), int(m), 1)
+                except (ValueError, AttributeError):
+                    return {"error": f"Invalid month: {month!r}"}
+            else:
+                month_date = s.execute(
+                    text("SELECT MAX(snapshot_month) FROM rent_snapshots WHERE property_code = :c"),
+                    {"c": code},
+                ).scalar()
+
+            if month_date is None:
+                results.append({"property_code": code, "month": None, "value": None, "note": "no snapshots"})
+                continue
+
+            v = s.execute(
+                text(f"""
+                    SELECT {agg_expr} AS value
+                    FROM rent_snapshots
+                    WHERE property_code = :c AND snapshot_month = :m
+                """),
+                {"c": code, "m": month_date},
+            ).scalar()
+            results.append({
+                "property_code": code,
+                "month": month_date.isoformat(),
+                "value": float(v) if v is not None else None,
+            })
+
+    return {
+        "property_codes": codes,
+        "dimension": dim,
+        "month": month,
+        "results": results,
+    }
+
+
+# ---------------------------------------------------------------------------
+# 10. List units with flexible filters
+# ---------------------------------------------------------------------------
+
+def list_units(
+    property_code: str,
+    unit_type: str | None = None,
+    bedrooms: float | None = None,
+    min_rent: float | None = None,
+    max_rent: float | None = None,
+    occupied: bool | None = None,
+    lease_ends_before: str | None = None,
+    lease_ends_after: str | None = None,
+    limit: int = 50,
+) -> dict[str, Any]:
+    """Flexible filtered list of units for an analyst's exploratory queries."""
+    code = require_scope(property_code)
+    limit = max(1, min(int(limit or 50), 500))
+
+    where = ["u.property_code = :code"]
+    params: dict[str, Any] = {"code": code, "limit": limit}
+
+    if unit_type:
+        where.append("u.unit_type = :unit_type")
+        params["unit_type"] = unit_type
+    if bedrooms is not None:
+        where.append("u.bedrooms = :bedrooms")
+        params["bedrooms"] = float(bedrooms)
+    if min_rent is not None:
+        where.append("COALESCE(l.monthly_rent, u.market_rent) >= :min_rent")
+        params["min_rent"] = float(min_rent)
+    if max_rent is not None:
+        where.append("COALESCE(l.monthly_rent, u.market_rent) <= :max_rent")
+        params["max_rent"] = float(max_rent)
+    if occupied is not None:
+        where.append("(l.unit_number IS NOT NULL) = :occupied")
+        params["occupied"] = bool(occupied)
+    if lease_ends_before:
+        where.append("l.lease_end <= :lease_ends_before")
+        params["lease_ends_before"] = lease_ends_before
+    if lease_ends_after:
+        where.append("l.lease_end >= :lease_ends_after")
+        params["lease_ends_after"] = lease_ends_after
+
+    sql = f"""
+        SELECT u.unit_number, u.unit_type, u.bedrooms, u.bathrooms, u.sqft,
+               u.market_rent, l.monthly_rent, l.balance, l.lease_end,
+               (l.unit_number IS NOT NULL) AS occupied
+        FROM units u
+        LEFT JOIN leases l
+          ON l.property_code = u.property_code AND l.unit_number = u.unit_number
+        WHERE {' AND '.join(where)}
+        ORDER BY u.unit_number
+        LIMIT :limit
+    """
+    with session_scope() as s:
+        rows = _rows_to_dicts(s.execute(text(sql), params))
+    rows = [_stringify_dates(r) for r in rows]
+    return {
+        "property_code": code,
+        "filters": {k: v for k, v in params.items() if k not in ("code", "limit")},
+        "row_count": len(rows),
+        "rows": rows,
+    }
+
+
+# ---------------------------------------------------------------------------
 # Registry — consumed by the LangGraph SQL node.
 # ---------------------------------------------------------------------------
 
@@ -360,11 +660,80 @@ TOOLS: dict[str, dict[str, Any]] = {
         "description": "Leases with highest outstanding balance (default top 10).",
         "params": ["n?"],
     },
+    "get_unit_charges": {
+        "fn": get_unit_charges,
+        "description": (
+            "Every charge line item for one unit, in source order. Preserves "
+            "multiplicity — e.g. surfaces 2 PARKING lines of $75 and $100 "
+            "rather than a single $175 total. Use this for 'what fees does "
+            "unit X pay?' questions."
+        ),
+        "params": ["unit_number", "snapshot_month?"],
+    },
+    "compare_units": {
+        "fn": compare_units,
+        "description": (
+            "Side-by-side comparison of 2+ units within ONE property. "
+            "dimensions can include rent/sqft/market_rent/balance/bedrooms/bathrooms."
+        ),
+        "params": ["unit_numbers (list)", "dimensions (list, optional)"],
+    },
+    "compare_properties": {
+        "fn": compare_properties,
+        "description": (
+            "Aggregate one metric across 2+ properties. dimension is one of "
+            "avg_rent/total_units/occupied_units/occupancy_pct/rent_roll_total."
+        ),
+        "params": ["property_codes (list)", "dimension", "month?"],
+    },
+    "list_units": {
+        "fn": list_units,
+        "description": (
+            "Filtered list of units. Filters: unit_type, bedrooms, min_rent, "
+            "max_rent, occupied, lease_ends_before, lease_ends_after."
+        ),
+        "params": [
+            "unit_type?", "bedrooms?", "min_rent?", "max_rent?",
+            "occupied?", "lease_ends_before?", "lease_ends_after?", "limit?",
+        ],
+    },
+    "execute_scoped_sql": {
+        # Lazy import keeps the validator + reader connection out of startup.
+        "fn": lambda *a, **kw: _lazy_execute_scoped_sql(*a, **kw),
+        "description": (
+            "BACKSTOP. Run a custom SELECT against the rent-roll DB when no "
+            "curated tool fits. Tables: properties, units, leases, rent_snapshots, "
+            "rent_charge_lines. The query is validated (sqlglot AST), scope-filtered, "
+            "and executed as a read-only user. Use for novel multi-condition "
+            "questions (e.g. 'units with rent > $2500 AND lease ending Q1 2026')."
+        ),
+        "params": ["sql"],  # property_codes injected by the graph
+    },
 }
 
 
-def run_tool(name: str, property_code: str, **kwargs: Any) -> dict[str, Any]:
-    """Look up and run a tool by name. Scope enforcement happens inside."""
+def _lazy_execute_scoped_sql(property_codes, sql):
+    from .sql_executor import execute_scoped_sql
+    return execute_scoped_sql(property_codes, sql)
+
+
+def run_tool(name: str, property_code: str | None, **kwargs: Any) -> dict[str, Any]:
+    """Look up and run a tool by name. Scope enforcement happens inside.
+
+    Signature dispatch:
+      - `compare_properties` takes `property_codes` (list) — caller supplies
+        it in kwargs; `property_code` is ignored.
+      - `execute_scoped_sql` accepts a list. We default it to a single-element
+        list from `property_code` if the caller didn't pass `property_codes`.
+      - All other tools take `property_code` as the first positional arg.
+    """
     if name not in TOOLS:
         raise KeyError(f"Unknown SQL tool: {name}")
+    if name == "compare_properties":
+        return TOOLS[name]["fn"](**kwargs)
+    if name == "execute_scoped_sql":
+        codes = kwargs.pop("property_codes", None) or (
+            [property_code] if property_code else []
+        )
+        return TOOLS[name]["fn"](codes, kwargs.get("sql", ""))
     return TOOLS[name]["fn"](property_code, **kwargs)

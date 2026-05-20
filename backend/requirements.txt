@@ -21,11 +21,15 @@ lxml==5.3.0
 # RAG
 chromadb==0.5.15
 
-# Orchestration
-langgraph==0.2.34
-langchain-core==0.3.10
+# Orchestration — LangGraph 1.x with native interrupt/Command resume
+langgraph>=1.0,<2
+langgraph-checkpoint>=4.0,<5
+langchain>=1.0,<2
+langchain-core>=1.0,<2
+langchain-openai>=1.0,<2
 
 # LLM providers
 openai>=1.55,<3
+sqlglot>=25
 anthropic==0.34.2
 google-generativeai==0.8.3
