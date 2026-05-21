@@ -148,6 +148,38 @@ _CHART_SHAPE = {
 }
 
 
+def _resolve_chart_title(
+    explicit: str | None,
+    chart_type: str,
+    data: dict,
+) -> str:
+    """Pick a sensible title when the LLM didn't supply one.
+
+    Order of preference:
+      1. The caller's explicit `title` if non-empty.
+      2. A title-like field inside `data` (label/title/name/metric/subtitle).
+         These are common places the LLM stuffs the label when it forgets
+         the top-level `title` arg.
+      3. A reasonable default derived from the chart type.
+
+    The fallback path uses the most specific data field available so a
+    series of KPI cards with distinct subtitles produces distinct titles
+    and isn't collapsed by the (type, title) dedup in _collect_chart_attempts.
+    """
+    if explicit and isinstance(explicit, str) and explicit.strip():
+        return explicit.strip()
+    if isinstance(data, dict):
+        for key in ("title", "label", "name", "metric", "subtitle", "header"):
+            v = data.get(key)
+            if isinstance(v, str) and v.strip():
+                return v.strip()
+        # KPI: the `value` itself isn't a title, but if nothing else, prepend
+        # "Metric" to give the dedup key uniqueness when subtitles also exist.
+        if chart_type == "kpi" and data.get("value") is not None:
+            return f"KPI · {data['value']}"
+    return chart_type.replace("_", " ").title()
+
+
 def _validate_chart_data(chart_type: str, data: dict) -> tuple[bool, str]:
     """Return (is_valid, error_or_'')."""
     if not isinstance(data, dict):
@@ -267,13 +299,19 @@ def _build_tools(scope: ScopeDecision):
         return search_property(primary_code, query, k=k)
 
     @tool
-    def render_chart(chart_type: str, title: str, data: dict) -> dict:
-        """Render a UI chart/table/KPI from data you ALREADY have from prior tool calls.
+    def render_chart(
+        chart_type: str,
+        data: dict,
+        title: str | None = None,
+    ) -> dict:
+        """Render a UI chart / table / KPI card from data you ALREADY have.
 
-        IMPORTANT: This is HOW you draw a chart. Calling it makes a visual
+        IMPORTANT: this is HOW you draw a visual. Calling it makes a chart
         appear in the user's UI. Never say "I cannot draw" — call this tool
         instead. You may emit it IN PARALLEL with a data tool in the same
-        turn (e.g. compare_units + render_chart together).
+        turn (e.g. compare_units + render_chart together). For dashboards,
+        call render_chart MULTIPLE times with distinct titles to surface
+        several KPI cards / charts side by side.
 
         chart_type (canonical names, but short aliases like "pie" / "bar" /
         "line" / "donut" / "compare" also work):
@@ -284,6 +322,14 @@ def _build_tools(scope: ScopeDecision):
           comparison_chart data: categories=[..], rows=[{dimension, <cat>:val, ...}]
           table            data: columns=[..], rows=[[..], ..]
           kpi              data: value="..", subtitle?: ".."
+                            (Provide ONE metric per kpi card. For multiple
+                             metrics, call render_chart once per card with
+                             a distinct title.)
+
+        `title` is the heading shown above the visual (e.g. "Avg Rent" for
+        a KPI card or "Rent Comparison" for a chart). If you omit it, a
+        title is inferred from `data` (data.label, data.subtitle, data.name)
+        — but providing an explicit, descriptive title is strongly preferred.
         """
         # 1. Accept short-form aliases ("pie" → "pie_chart" etc.)
         raw = (chart_type or "").strip().lower()
@@ -298,15 +344,20 @@ def _build_tools(scope: ScopeDecision):
             }
         # 2. Normalise the data shape for common LLM-mistake patterns.
         norm_data = _normalise_chart_data(normalised_type, data or {})
+        # 3. Infer a title if the LLM omitted it. Different defaults per type
+        #    so deduplication doesn't collapse legitimately-distinct KPIs.
+        resolved_title = _resolve_chart_title(title, normalised_type, norm_data)
+        # 4. Validate the data shape AFTER normalisation.
         ok, err = _validate_chart_data(normalised_type, norm_data)
         if not ok:
             return {
                 "error": f"data shape invalid for {normalised_type}: {err}",
                 "attempted_type": normalised_type,
+                "attempted_title": resolved_title,
                 "received_keys": list((data or {}).keys()) if isinstance(data, dict) else [],
             }
         return {
-            "chart_spec": {"type": normalised_type, "title": title, "data": norm_data},
+            "chart_spec": {"type": normalised_type, "title": resolved_title, "data": norm_data},
             "ok": True,
         }
 
@@ -380,10 +431,22 @@ def _build_system_prompt(state: ChatState) -> str:
         "  - Filtered unit list (multi-condition)                    → list_units\n"
         "  - NOVEL queries no curated tool covers                    → execute_scoped_sql\n"
         "  - Amenities / floor plans / pet policy / marketing copy   → search_property_pages\n"
+        "\nKPI cards — read carefully:\n"
+        "  - When the user asks for 'KPI(s)', 'key metrics', or a 'dashboard', "
+        "emit ONE render_chart(chart_type='kpi') call PER METRIC with a "
+        "distinct, descriptive title. ALWAYS pass `title` explicitly.\n"
+        "  - Example: title='A103 · Monthly Rent', "
+        "data={value:'$2,480', subtitle:'755 sqft, lease ends 2026-06-06'}.\n"
+        "  - For unit/property comparisons, emit one KPI card per "
+        "(entity, metric) pair — six cards for A103 vs A107 across rent / "
+        "sqft / market rent.\n"
+        "  - Never bury KPI values inside a markdown bullet list. The user "
+        "asked for cards.\n"
         "\nCharts — read carefully:\n"
         "  - The user's UI renders any chart you emit via render_chart. They will SEE the chart.\n"
         "  - If the user mentions a chart type (pie, bar, line, donut, chart, plot, graph), "
         "you MUST call render_chart with that type before finishing.\n"
+        "  - ALWAYS pass `title` as a top-level argument to render_chart.\n"
         "  - Prefer emitting the DATA tool and render_chart IN PARALLEL in the same turn — "
         "this is supported and faster.\n"
         "  - Never tell the user 'I cannot draw' — render_chart IS how you draw.\n"
