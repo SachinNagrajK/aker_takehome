@@ -11,11 +11,30 @@ serialised into `ToolMessage.content` to keep prompt budgets sane.
 """
 from __future__ import annotations
 
-from operator import add
 from typing import Annotated, Any, TypedDict
 
 from langchain_core.messages import BaseMessage
 from langgraph.graph.message import add_messages
+
+
+def _tool_history_reducer(left: list, right: list) -> list:
+    """Custom reducer with explicit-reset semantics.
+
+    Standard `operator.add` would accumulate `tool_history` across turns of
+    the same conversation, leaking turn-1 steps into turn-2's UI trace.
+    With this reducer:
+
+      - `enter_turn` returns `tool_history: []` at the start of every turn
+        to CLEAR the previous turn's steps.
+      - `tools` returns the new step(s) it ran, which append to the now-empty
+        list.
+
+    The only node that should return an empty list is `enter_turn`. The
+    executor (`tools`) always returns a non-empty list when it appends.
+    """
+    if right == []:
+        return []
+    return (left or []) + (right or [])
 
 
 class ToolStep(TypedDict, total=False):
@@ -50,8 +69,9 @@ class ChatState(TypedDict, total=False):
     # --- clarification flow (LangGraph interrupt) ---
     clarification: dict[str, Any] | None   # set by clarify_router
 
-    # --- parallel trace for UI (full tool results, not truncated) ---
-    tool_history: Annotated[list[ToolStep], add]
+    # --- parallel trace for UI (full tool results, not truncated).
+    # Uses a custom reducer so each turn starts with an empty list. ---
+    tool_history: Annotated[list[ToolStep], _tool_history_reducer]
 
     # --- final outputs (filled by compose) ---
     answer_markdown: str

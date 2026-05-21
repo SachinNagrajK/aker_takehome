@@ -717,23 +717,11 @@ def _lazy_execute_scoped_sql(property_codes, sql):
     return execute_scoped_sql(property_codes, sql)
 
 
-def run_tool(name: str, property_code: str | None, **kwargs: Any) -> dict[str, Any]:
-    """Look up and run a tool by name. Scope enforcement happens inside.
-
-    Signature dispatch:
-      - `compare_properties` takes `property_codes` (list) — caller supplies
-        it in kwargs; `property_code` is ignored.
-      - `execute_scoped_sql` accepts a list. We default it to a single-element
-        list from `property_code` if the caller didn't pass `property_codes`.
-      - All other tools take `property_code` as the first positional arg.
-    """
-    if name not in TOOLS:
-        raise KeyError(f"Unknown SQL tool: {name}")
-    if name == "compare_properties":
-        return TOOLS[name]["fn"](**kwargs)
-    if name == "execute_scoped_sql":
-        codes = kwargs.pop("property_codes", None) or (
-            [property_code] if property_code else []
-        )
-        return TOOLS[name]["fn"](codes, kwargs.get("sql", ""))
-    return TOOLS[name]["fn"](property_code, **kwargs)
+# NOTE: A legacy `run_tool()` string-keyed dispatcher used to live here.
+# It was v1's hand-rolled router back when the LLM emitted JSON like
+# `{"tool": "name", "args": {...}}`. v2 switched to native OpenAI
+# tool-calling via `ChatOpenAI.bind_tools()`, which dispatches directly
+# inside the `tools` graph node — `run_tool()` had zero callers and was
+# removed in v3. The `TOOLS` registry above is still used by graph/nodes.py
+# (`SQL_TOOLS` import) for `is this tool name a SQL tool?` lookups in
+# `_route_label`, so the dict stays.

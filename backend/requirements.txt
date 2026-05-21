@@ -28,8 +28,10 @@ langchain>=1.0,<2
 langchain-core>=1.0,<2
 langchain-openai>=1.0,<2
 
-# LLM providers
+# LLM providers — all accessed via LangChain chat classes that implement
+# .bind_tools(). The raw `anthropic` SDK is a transitive dep of
+# langchain-anthropic; same for google-genai via langchain-google-genai.
 openai>=1.55,<3
 sqlglot>=25
-anthropic==0.34.2
-google-generativeai==0.8.3
+langchain-anthropic>=1.0,<2
+langchain-google-genai>=2,<3

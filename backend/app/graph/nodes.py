@@ -47,6 +47,7 @@ from langchain_openai import ChatOpenAI
 from langgraph.types import interrupt
 
 from ..config import get_settings
+from ..llm_registry import ProviderUnavailable
 from ..guardrails.scope import (
     ScopeDecision,
     UnknownPropertyError,
@@ -63,6 +64,103 @@ from .state import ChatState, ToolStep
 _settings = get_settings()
 MAX_TURNS_DEFAULT = 8
 TOOL_CONTENT_PREVIEW_CHARS = 4000   # cap on ToolMessage.content serialisation
+
+
+# ---------------------------------------------------------------------------
+# Chart rendering — type aliases + shape normalisation
+# ---------------------------------------------------------------------------
+#
+# The LLM frequently emits short-form chart types ("pie" instead of
+# "pie_chart") or the wrong field names for the chart family it picked
+# ({x, y} for a pie that wants {labels, values}). Both used to silently
+# drop the chart from the response. Normalisation gives the LLM slack
+# without compromising the UI contract.
+
+ALLOWED_CHART_TYPES = frozenset({
+    "kpi", "table", "bar_chart", "line_chart",
+    "comparison_chart", "pie_chart", "donut_chart",
+})
+
+CHART_TYPE_ALIASES = {
+    "pie":               "pie_chart",
+    "doughnut":          "donut_chart",
+    "donut":             "donut_chart",
+    "bar":               "bar_chart",
+    "barchart":          "bar_chart",
+    "line":              "line_chart",
+    "linechart":         "line_chart",
+    "compare":           "comparison_chart",
+    "comparison":        "comparison_chart",
+    "compare_chart":     "comparison_chart",
+}
+
+
+def _normalise_chart_data(chart_type: str, data: dict) -> dict:
+    """Translate common LLM-mistake shapes into the canonical shape for the type.
+
+    Examples handled:
+      - pie/donut with {x, y}             -> {labels: x, values: y}
+      - bar/line with {labels, values}    -> {x: labels, y: values}
+      - comparison_chart with {labels, values}  -> wraps as a single-row series
+    """
+    if not isinstance(data, dict):
+        return data
+
+    if chart_type in ("pie_chart", "donut_chart"):
+        if "labels" not in data and "x" in data:
+            data = {**data, "labels": data["x"]}
+        if "values" not in data and "y" in data:
+            data = {**data, "values": data["y"]}
+        if "values" not in data and "data" in data and isinstance(data["data"], list):
+            # {labels: [...], data: [{name,value}, ...]} → flat values list
+            data = {**data, "values": [d.get("value") for d in data["data"]]}
+
+    elif chart_type in ("bar_chart", "line_chart"):
+        if "x" not in data and "labels" in data:
+            data = {**data, "x": data["labels"]}
+        if "y" not in data and "values" in data:
+            data = {**data, "y": data["values"]}
+
+    elif chart_type == "comparison_chart":
+        if "categories" not in data and "labels" in data:
+            data = {**data, "categories": data["labels"]}
+        if "rows" not in data and "values" in data:
+            cats = data.get("categories") or []
+            vals = data.get("values") or []
+            data = {
+                **data,
+                "rows": [{"dimension": "value",
+                          **{c: v for c, v in zip(cats, vals)}}],
+            }
+
+    return data
+
+
+# Minimum-required keys per chart type (after normalisation).
+_CHART_SHAPE = {
+    "pie_chart":         ("labels", "values"),
+    "donut_chart":       ("labels", "values"),
+    "bar_chart":         ("x", "y"),
+    "line_chart":        ("x", "y"),
+    "comparison_chart":  ("categories", "rows"),
+    "table":             ("columns", "rows"),
+    "kpi":               ("value",),
+}
+
+
+def _validate_chart_data(chart_type: str, data: dict) -> tuple[bool, str]:
+    """Return (is_valid, error_or_'')."""
+    if not isinstance(data, dict):
+        return False, "data must be a dict"
+    expected = _CHART_SHAPE.get(chart_type, ())
+    missing = [k for k in expected if k not in data]
+    if missing:
+        return False, f"missing required keys for {chart_type}: {missing}; expected {list(expected)}"
+    # For visual charts, require non-empty values.
+    if chart_type in ("pie_chart", "donut_chart"):
+        if not data.get("labels") or not data.get("values"):
+            return False, "pie/donut needs non-empty labels and values"
+    return True, ""
 
 
 # ---------------------------------------------------------------------------
@@ -177,7 +275,8 @@ def _build_tools(scope: ScopeDecision):
         instead. You may emit it IN PARALLEL with a data tool in the same
         turn (e.g. compare_units + render_chart together).
 
-        Allowed `chart_type` values (use one of these exactly):
+        chart_type (canonical names, but short aliases like "pie" / "bar" /
+        "line" / "donut" / "compare" also work):
           pie_chart        data: labels=[..], values=[..]
           donut_chart      data: labels=[..], values=[..]
           bar_chart        data: x=[..], y=[..]
@@ -186,16 +285,28 @@ def _build_tools(scope: ScopeDecision):
           table            data: columns=[..], rows=[[..], ..]
           kpi              data: value="..", subtitle?: ".."
         """
-        allowed = {
-            "pie_chart", "donut_chart", "bar_chart", "line_chart",
-            "comparison_chart", "table", "kpi",
-        }
-        if chart_type not in allowed:
-            return {"error": f"chart_type must be one of {sorted(allowed)}; got {chart_type!r}"}
-        if not isinstance(data, dict):
-            return {"error": "data must be a dict matching the chart_type's expected shape"}
+        # 1. Accept short-form aliases ("pie" → "pie_chart" etc.)
+        raw = (chart_type or "").strip().lower()
+        normalised_type = CHART_TYPE_ALIASES.get(raw, raw)
+        if normalised_type not in ALLOWED_CHART_TYPES:
+            return {
+                "error": (
+                    f"chart_type must be one of {sorted(ALLOWED_CHART_TYPES)} "
+                    f"(or a short alias like 'pie', 'bar', 'line'); got {chart_type!r}"
+                ),
+                "attempted_type": chart_type,
+            }
+        # 2. Normalise the data shape for common LLM-mistake patterns.
+        norm_data = _normalise_chart_data(normalised_type, data or {})
+        ok, err = _validate_chart_data(normalised_type, norm_data)
+        if not ok:
+            return {
+                "error": f"data shape invalid for {normalised_type}: {err}",
+                "attempted_type": normalised_type,
+                "received_keys": list((data or {}).keys()) if isinstance(data, dict) else [],
+            }
         return {
-            "chart_spec": {"type": chart_type, "title": title, "data": data},
+            "chart_spec": {"type": normalised_type, "title": title, "data": norm_data},
             "ok": True,
         }
 
@@ -282,6 +393,16 @@ def _build_system_prompt(state: ChatState) -> str:
         "same chart with different data — get the data right first, THEN render.\n"
         "  - In your final natural-language reply, refer to the chart by title only "
         "(e.g. \"the pie chart above shows…\"). Just narrate the numbers.\n"
+        "\nMulti-step reasoning:\n"
+        "  - Decompose complex requests BEFORE charting. Example: for "
+        "'compare A103 and A104', if `compare_units` returns "
+        "`missing: ['A104']`, DO NOT refuse the request — chart A103 and "
+        "say in your reply that A104 was not found.\n"
+        "  - Treat each user message as a fresh question that may reference "
+        "prior conversation context. Read the full message history.\n"
+        "  - If a unit, month, or property the user named doesn't exist in "
+        "the data, still answer with what IS available and call out what's "
+        "missing — don't silently drop the question.\n"
         "\nFinish: stop calling tools and reply with a brief natural-language summary "
         "once you have enough data AND have rendered any charts the user asked for."
     )
@@ -307,12 +428,48 @@ _COMPOSER_SYSTEM = (
 # Utilities
 # ---------------------------------------------------------------------------
 
-def _make_llm(state: ChatState) -> ChatOpenAI:
-    return ChatOpenAI(
-        model=state.get("model") or "gpt-4o-mini",
-        temperature=0.2,
-        api_key=_settings.openai_api_key,
-    )
+def _make_llm(state: ChatState):
+    """Return a ChatModel for the user's selected provider+model.
+
+    Honors `state["llm_provider"]` (set from the frontend dropdown). All
+    three providers use their native LangChain chat classes, which all
+    implement `.bind_tools(...)` with the same surface — so the
+    agent/tools loop works identically regardless of provider.
+
+    Raises ProviderUnavailable when the API key for the selected provider
+    isn't configured. main.py catches that and returns HTTP 400.
+    """
+    provider = (state.get("llm_provider") or "openai").lower()
+    model = state.get("model") or "gpt-4o-mini"
+    temperature = 0.2
+
+    if provider == "openai":
+        if not _settings.openai_api_key:
+            raise ProviderUnavailable("OPENAI_API_KEY not set")
+        return ChatOpenAI(
+            model=model, temperature=temperature,
+            api_key=_settings.openai_api_key,
+        )
+
+    if provider == "anthropic":
+        if not _settings.anthropic_api_key:
+            raise ProviderUnavailable("ANTHROPIC_API_KEY not set")
+        from langchain_anthropic import ChatAnthropic
+        return ChatAnthropic(
+            model=model, temperature=temperature,
+            api_key=_settings.anthropic_api_key,
+        )
+
+    if provider == "gemini":
+        if not _settings.google_api_key:
+            raise ProviderUnavailable("GOOGLE_API_KEY not set")
+        from langchain_google_genai import ChatGoogleGenerativeAI
+        return ChatGoogleGenerativeAI(
+            model=model, temperature=temperature,
+            google_api_key=_settings.google_api_key,
+        )
+
+    raise ProviderUnavailable(f"Unknown provider: {provider!r}")
 
 
 def _truncate(s: str, n: int = TOOL_CONTENT_PREVIEW_CHARS) -> str:
@@ -352,7 +509,7 @@ def scope_router(state: ChatState) -> str:
     kind = (state.get("scope") or {}).get("kind", "missing")
     if kind in {"conflict", "missing"}:
         return "clarify"
-    return "seed_messages"
+    return "enter_turn"
 
 
 # ---------------------------------------------------------------------------
@@ -419,20 +576,76 @@ def clarify(state: ChatState) -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
-# 3. seed_messages — once, after scope is resolved, prime the conversation
+# 3. enter_turn — open a new conversational turn
 # ---------------------------------------------------------------------------
+#
+# Runs once at the start of every /chat invocation (after scope resolution).
+# This is the fix for the multi-turn persistence bug: it ALWAYS appends the
+# new user message to `messages`. The SystemMessage is seeded only on the
+# very first turn. Per-turn state (turn_count, tool_history, components,
+# answer_markdown, sources, route, gave_up) is reset so the response shows
+# only what happened in THIS turn.
 
-def seed_messages(state: ChatState) -> dict[str, Any]:
-    """Initialise the LLM message list. Idempotent for resumes (no-op if seeded)."""
-    if state.get("messages"):
-        return {}  # already seeded (e.g. resume after clarification)
+# Marker the scope-refresh SystemMessage carries so we can detect drift
+# across turns without re-parsing the full system prompt every time.
+_SCOPE_MARKER = "[scope]"
+
+
+def _last_scope_summary_in(messages: list) -> str | None:
+    """Find the most recent scope summary embedded in any prior SystemMessage."""
+    for m in reversed(messages):
+        if isinstance(m, SystemMessage) and _SCOPE_MARKER in (m.content or ""):
+            # SystemMessage content has the marker followed by the summary text.
+            try:
+                return (m.content.split(_SCOPE_MARKER, 1)[1]).strip().splitlines()[0]
+            except (IndexError, AttributeError):
+                continue
+    return None
+
+
+def enter_turn(state: ChatState) -> dict[str, Any]:
+    """Open a new conversational turn.
+
+    - First turn: seed the full SystemMessage + the user's HumanMessage.
+    - Later turns: append only the new HumanMessage. If the active scope
+      drifted from the prior turn (different property), append a small
+      'scope refresh' SystemMessage so the LLM knows.
+    - Resets per-turn state regardless.
+    """
+    existing = state.get("messages") or []
+    current_summary = _scope_summary(state.get("scope") or {})
+    last_summary = _last_scope_summary_in(existing)
+
+    new_msgs: list = []
+    if not existing or last_summary is None:
+        # First turn — seed the full system prompt. The marker line at the
+        # very top makes scope-drift detection cheap on later turns.
+        sys_text = (
+            f"{_SCOPE_MARKER} {current_summary}\n\n" + _build_system_prompt(state)
+        )
+        new_msgs.append(SystemMessage(content=sys_text))
+    elif last_summary != current_summary:
+        # Scope drifted between turns — append a refresh note rather than a
+        # full re-prompt. Positioned at the end so it's the most-recent
+        # instruction the LLM sees.
+        new_msgs.append(SystemMessage(
+            content=f"{_SCOPE_MARKER} {current_summary}\n\n"
+                    f"Scope updated for this turn: {current_summary}. "
+                    "Use ONLY this scope when answering the next user message."
+        ))
+    new_msgs.append(HumanMessage(content=state["user_message"]))
+
     return {
-        "messages": [
-            SystemMessage(content=_build_system_prompt(state)),
-            HumanMessage(content=state["user_message"]),
-        ],
-        "turn_count": 0,
+        "messages": new_msgs,                       # add_messages reducer appends
+        "turn_count": 0,                            # per-turn counter resets
         "max_turns": state.get("max_turns") or MAX_TURNS_DEFAULT,
+        # Per-turn outputs reset; turn-local trace (custom reducer treats [] as clear)
+        "tool_history": [],
+        "answer_markdown": "",
+        "components": [],
+        "sources": [],
+        "route": "agent",
+        "gave_up": False,
     }
 
 
@@ -533,36 +746,45 @@ def tools(state: ChatState) -> dict[str, Any]:
 # 6. compose — final markdown + components
 # ---------------------------------------------------------------------------
 
-def _collect_chart_specs(history: list[ToolStep]) -> list[dict]:
-    """All render_chart calls become explicit chart_specs.
+def _collect_chart_attempts(history: list[ToolStep]) -> tuple[list[dict], list[dict]]:
+    """Inspect history for render_chart calls.
 
-    Dedupe by (type, title) keeping the LAST occurrence — if the agent calls
-    the same chart twice (e.g. once with placeholder zeros, then with real
-    numbers) we render only the corrected version. Order of first-occurrence
-    is preserved for stable UI layout.
+    Returns (rendered_specs, failed_attempts):
+      - rendered_specs: deduped by (type, title), latest wins. Order of
+        first occurrence preserved for stable UI layout.
+      - failed_attempts: list of {attempted_type, error, args} for chart
+        calls that returned an error. Surfaced in compose so the user
+        learns "your chart didn't render and here's why" instead of being
+        silently dropped.
     """
     by_key: dict[tuple[str, str], dict] = {}
     order: list[tuple[str, str]] = []
+    failures: list[dict] = []
+
     for step in history:
-        if not step.get("ok") or step.get("tool") != "render_chart":
+        if step.get("tool") != "render_chart":
             continue
         result = step.get("result")
-        if not isinstance(result, dict):
-            continue
-        spec = result.get("chart_spec")
-        if not isinstance(spec, dict):
-            continue
-        if not spec.get("type") or not spec.get("title"):
-            continue
-        key = (spec["type"], spec["title"])
-        if key not in by_key:
-            order.append(key)
-        by_key[key] = {
-            "type": spec["type"],
-            "title": spec["title"],
-            "data": spec.get("data") or {},
-        }
-    return [by_key[k] for k in order]
+        if step.get("ok") and isinstance(result, dict):
+            spec = result.get("chart_spec")
+            if isinstance(spec, dict) and spec.get("type") and spec.get("title"):
+                key = (spec["type"], spec["title"])
+                if key not in by_key:
+                    order.append(key)
+                by_key[key] = {
+                    "type": spec["type"],
+                    "title": spec["title"],
+                    "data": spec.get("data") or {},
+                }
+                continue
+        # Anything else under render_chart is a failure.
+        failures.append({
+            "attempted_type": (result or {}).get("attempted_type") if isinstance(result, dict) else None,
+            "args": step.get("args"),
+            "error": step.get("error") or (result or {}).get("error") if isinstance(result, dict) else None,
+        })
+
+    return [by_key[k] for k in order], failures
 
 
 # Strip hallucinated inline images: `![alt](data:image/...;base64,...)` etc.
@@ -632,11 +854,11 @@ def compose(state: ChatState) -> dict[str, Any]:
         ]).content or "").strip()
 
     # Components precedence: explicit render_chart specs > deterministic
-    # auto-emit for the last successful SQL tool. NO band-aid keyword
-    # detection — if the agent didn't render the chart the user asked for,
-    # the LLM's natural answer will still be useful, and the auto-emit
-    # gives them *some* visualisation.
-    components = _collect_chart_specs(history)
+    # auto-emit for the last successful SQL tool. If an agent's render_chart
+    # call failed (bad chart_type / shape), `chart_failures` carries the
+    # detail so compose can surface a transparent note instead of silently
+    # showing only the auto-emitted default.
+    components, chart_failures = _collect_chart_attempts(history)
     if not components:
         last_ok_sql = next(
             (s for s in reversed(history)
@@ -647,6 +869,15 @@ def compose(state: ChatState) -> dict[str, Any]:
             components = build_components(
                 last_ok_sql["tool"], last_ok_sql.get("result")
             ) or []
+
+    # If render_chart was attempted but failed AND no successful chart of a
+    # similar type was produced, surface the failure transparently. Better
+    # to tell the user "your chart didn't render because X" than to silently
+    # show an auto-emitted default or nothing at all.
+    if chart_failures and not _has_chart_component(components):
+        failure_note = _format_chart_failure_note(chart_failures)
+        if failure_note:
+            answer = (answer + "\n\n" + failure_note).strip()
 
     # Sources: from the last successful RAG step (if any).
     sources: list[dict] = []
@@ -665,3 +896,21 @@ def compose(state: ChatState) -> dict[str, Any]:
         "route": _route_label(history),
         "gave_up": gave_up,
     }
+
+
+def _has_chart_component(components: list[dict]) -> bool:
+    """True if any of the emitted components is a chart (vs KPI/table)."""
+    chart_types = {"pie_chart", "donut_chart", "bar_chart", "line_chart", "comparison_chart"}
+    return any(c.get("type") in chart_types for c in components)
+
+
+def _format_chart_failure_note(failures: list[dict]) -> str:
+    """Concise Markdown note appended to the answer when a chart attempt failed."""
+    if not failures:
+        return ""
+    lines = ["> _Note: a chart was requested but couldn't be drawn:_"]
+    for f in failures[:3]:  # cap to avoid noise
+        attempted = f.get("attempted_type") or "chart"
+        err = (f.get("error") or "unknown error").strip()
+        lines.append(f"> - `{attempted}` — {err}")
+    return "\n".join(lines)

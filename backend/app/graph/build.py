@@ -5,7 +5,7 @@ Topology:
     START → extract_scope ──(conflict|missing)──▶ clarify (interrupt)
                                                       │
                                                       └── (re-route) ──▶ extract_scope
-            └──(single|compare)──▶ seed_messages ──▶ agent ◀────┐
+            └──(single|compare)──▶ enter_turn ──▶ agent ◀────┐
                                                        │         │
                                                   (tool_calls?)   │
                                                        ├─yes─▶ tools ┘
@@ -33,7 +33,7 @@ from .nodes import (
     compose,
     extract_scope,
     scope_router,
-    seed_messages,
+    enter_turn,
     tools,
 )
 
@@ -43,7 +43,7 @@ def _build():
 
     g.add_node("extract_scope", extract_scope)
     g.add_node("clarify", clarify)
-    g.add_node("seed_messages", seed_messages)
+    g.add_node("enter_turn", enter_turn)
     g.add_node("agent", agent)
     g.add_node("tools", tools)
     g.add_node("compose", compose)
@@ -52,18 +52,18 @@ def _build():
     g.add_conditional_edges(
         "extract_scope",
         scope_router,
-        {"clarify": "clarify", "seed_messages": "seed_messages"},
+        {"clarify": "clarify", "enter_turn": "enter_turn"},
     )
     # After the user answers the clarification, re-dispatch through the same
     # router so an invalid reply ("garbage") loops back to clarify, and a
-    # valid one proceeds to seed_messages.
+    # valid one proceeds to enter_turn.
     g.add_conditional_edges(
         "clarify",
         scope_router,
-        {"clarify": "clarify", "seed_messages": "seed_messages"},
+        {"clarify": "clarify", "enter_turn": "enter_turn"},
     )
 
-    g.add_edge("seed_messages", "agent")
+    g.add_edge("enter_turn", "agent")
     g.add_conditional_edges(
         "agent",
         agent_should_continue,

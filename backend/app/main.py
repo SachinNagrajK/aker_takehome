@@ -29,8 +29,7 @@ from .schemas import (
     PropertyOut, Source, ToolTraceStep, UIComponent,
 )
 from .guardrails.scope import UnknownPropertyError, ScopeViolationError
-from .llm.base import ProviderUnavailable
-from .llm.factory import list_llms, validate_model
+from .llm_registry import ProviderUnavailable, list_llms, validate_model
 from .graph.build import run_chat
 
 log = logging.getLogger("property_ai")
