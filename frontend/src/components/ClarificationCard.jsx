@@ -1,8 +1,9 @@
-// Rendered when the LangGraph agent pauses at a clarification interrupt.
-// Shows the agent's question and (if options provided) one-click reply buttons.
-// Falls back to a freeform text input.
-
+// Inline clarification panel — surfaces when the agent paused at an
+// interrupt (in v3 only the "missing" scope case, since dropdown+message
+// disagreement now auto-promotes to compare mode).
 import { useState } from 'react'
+import { HelpCircle } from 'lucide-react'
+import { motion } from 'framer-motion'
 
 export default function ClarificationCard({ clarification, onReply, disabled }) {
   const [freeform, setFreeform] = useState('')
@@ -10,16 +11,25 @@ export default function ClarificationCard({ clarification, onReply, disabled }) 
   const options = clarification?.options || []
   const kind = clarification?.scope_kind
 
+  const tooManyOptions = options.length > 8
+  const visibleOptions = tooManyOptions ? options.slice(0, 8) : options
+
   return (
-    <div className="clarification-card">
+    <motion.div
+      className="clarification-card"
+      initial={{ opacity: 0, y: 8 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={{ duration: 0.2 }}
+    >
       <div className="clarification-title">
+        <HelpCircle size={12} />
         Clarification needed{kind ? ` · ${kind}` : ''}
       </div>
       <div className="clarification-question">{question}</div>
 
-      {options.length > 0 && (
+      {visibleOptions.length > 0 && (
         <div className="clarification-options">
-          {options.map((opt) => (
+          {visibleOptions.map((opt) => (
             <button
               key={opt}
               className="clarification-option"
@@ -29,6 +39,11 @@ export default function ClarificationCard({ clarification, onReply, disabled }) 
               {opt}
             </button>
           ))}
+          {tooManyOptions && (
+            <span className="clarification-more">
+              + {options.length - visibleOptions.length} more — type one below
+            </span>
+          )}
         </div>
       )}
 
@@ -43,8 +58,8 @@ export default function ClarificationCard({ clarification, onReply, disabled }) 
           type="text"
           placeholder={
             options.length > 0
-              ? 'Or type your own (comma-separated for compare)…'
-              : 'Type the property code (or comma-separated codes)…'
+              ? 'Or type your own — multiple codes welcome (e.g. "compare 115r and 134r")'
+              : 'Type a property code or "compare X and Y"…'
           }
           value={freeform}
           onChange={(e) => setFreeform(e.target.value)}
@@ -52,6 +67,6 @@ export default function ClarificationCard({ clarification, onReply, disabled }) 
         />
         <button type="submit" disabled={disabled || !freeform.trim()}>Send</button>
       </form>
-    </div>
+    </motion.div>
   )
 }

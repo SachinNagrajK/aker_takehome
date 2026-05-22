@@ -56,7 +56,7 @@ from ..guardrails.scope import (
     validate_property_code,
 )
 from ..tools.sql_tools import TOOLS as SQL_TOOLS
-from ..tools.rag_tools import search_property
+from ..tools.rag_tools import search_property_active
 from .components import build_components
 from .state import ChatState, ToolStep
 
@@ -210,58 +210,90 @@ def _build_tools(scope: ScopeDecision):
     scope_codes = scope.codes if scope.kind == "compare" else (
         [scope.code] if scope.code else []
     )
+    is_compare = scope.kind == "compare"
+
+    def _pick_code(arg: str | None) -> str | dict:
+        """Resolve which property the LLM is asking about.
+
+        In compare mode the LLM MUST pass `property_code=` to single-property
+        tools. If it's omitted we default to the primary (first) code but
+        return a hint so the LLM can re-call for the other code. In single
+        mode the arg is optional; mismatches raise.
+        """
+        if arg:
+            c = arg.strip().lower()
+            if c not in scope_codes:
+                return {"error": f"property_code {arg!r} is not in the active scope ({scope_codes}). Use one of {scope_codes}."}
+            return c
+        return primary_code
 
     @tool
-    def get_property_summary() -> dict:
-        """High-level KPIs for the latest monthly snapshot: unit count, occupancy %, avg rent, total rent roll."""
-        return SQL_TOOLS["get_property_summary"]["fn"](primary_code)
+    def get_property_summary(property_code: str | None = None) -> dict:
+        """High-level KPIs (unit count, occupancy %, avg rent, total rent roll) for the LATEST monthly snapshot. In compare mode pass `property_code` to pick which property in scope; otherwise defaults to the primary."""
+        c = _pick_code(property_code)
+        if isinstance(c, dict): return c
+        return SQL_TOOLS["get_property_summary"]["fn"](c)
 
     @tool
-    def get_unit_mix() -> dict:
-        """Breakdown by unit_type (count, avg market rent, avg sqft) for the active property."""
-        return SQL_TOOLS["get_unit_mix"]["fn"](primary_code)
+    def get_unit_mix(property_code: str | None = None) -> dict:
+        """Breakdown by unit_type (count, avg market rent, avg sqft). In compare mode pass `property_code` to pick which property in scope."""
+        c = _pick_code(property_code)
+        if isinstance(c, dict): return c
+        return SQL_TOOLS["get_unit_mix"]["fn"](c)
 
     @tool
-    def get_occupancy(month: str | None = None) -> dict:
-        """Occupancy % for a single month (YYYY-MM). Defaults to latest snapshot."""
-        return SQL_TOOLS["get_occupancy"]["fn"](primary_code, month=month)
+    def get_occupancy(month: str | None = None, property_code: str | None = None) -> dict:
+        """Occupancy % for a single month (YYYY-MM). Defaults to latest snapshot. In compare mode pass `property_code` to pick which property."""
+        c = _pick_code(property_code)
+        if isinstance(c, dict): return c
+        return SQL_TOOLS["get_occupancy"]["fn"](c, month=month)
 
     @tool
-    def get_rent_trend(months: int = 12) -> dict:
-        """Monthly avg-rent and occupancy time series. `months` clamps the window (default 12)."""
-        return SQL_TOOLS["get_rent_trend"]["fn"](primary_code, months=months)
+    def get_rent_trend(months: int = 12, property_code: str | None = None) -> dict:
+        """Monthly avg-rent and occupancy time series. `months` clamps the window (default 12). In compare mode pass `property_code` to pick which property."""
+        c = _pick_code(property_code)
+        if isinstance(c, dict): return c
+        return SQL_TOOLS["get_rent_trend"]["fn"](c, months=months)
 
     @tool
-    def get_expiring_leases(within_days: int = 90, reference_date: str | None = None) -> dict:
-        """Leases expiring within N days of `reference_date` (default: today). Returns rows ordered by lease_end."""
+    def get_expiring_leases(within_days: int = 90, reference_date: str | None = None, property_code: str | None = None) -> dict:
+        """Leases expiring within N days of `reference_date` (default: today). Returns rows ordered by lease_end. In compare mode pass `property_code` to pick which property."""
+        c = _pick_code(property_code)
+        if isinstance(c, dict): return c
         return SQL_TOOLS["get_expiring_leases"]["fn"](
-            primary_code, within_days=within_days, reference_date=reference_date
+            c, within_days=within_days, reference_date=reference_date
         )
 
     @tool
-    def get_top_balances(n: int = 10) -> dict:
-        """Top N leases by outstanding balance (most owed first). Default n=10."""
-        return SQL_TOOLS["get_top_balances"]["fn"](primary_code, n=n)
+    def get_top_balances(n: int = 10, property_code: str | None = None) -> dict:
+        """Top N leases by outstanding balance (most owed first). Default n=10. In compare mode pass `property_code` to pick which property."""
+        c = _pick_code(property_code)
+        if isinstance(c, dict): return c
+        return SQL_TOOLS["get_top_balances"]["fn"](c, n=n)
 
     @tool
-    def get_unit_charges(unit_number: str, snapshot_month: str | None = None) -> dict:
-        """Every charge line item for ONE unit, in source order. Preserves multiplicity — e.g. two PARKING lines appear separately. Use this for 'what fees does unit X pay?' / 'how much parking does A103 pay?' questions."""
+    def get_unit_charges(unit_number: str, snapshot_month: str | None = None, property_code: str | None = None) -> dict:
+        """Every charge line item for ONE unit, in source order. Preserves multiplicity — e.g. two PARKING lines appear separately. Use this for 'what fees does unit X pay?' / 'how much parking does A103 pay?' questions. In compare mode pass `property_code`."""
+        c = _pick_code(property_code)
+        if isinstance(c, dict): return c
         return SQL_TOOLS["get_unit_charges"]["fn"](
-            primary_code, unit_number=unit_number, snapshot_month=snapshot_month
+            c, unit_number=unit_number, snapshot_month=snapshot_month
         )
 
     @tool
-    def compare_units(unit_numbers: list[str], dimensions: list[str] | None = None) -> dict:
-        """Side-by-side comparison of 2+ units WITHIN the active property. dimensions can include rent, sqft, market_rent, balance, bedrooms, bathrooms."""
+    def compare_units(unit_numbers: list[str], dimensions: list[str] | None = None, property_code: str | None = None) -> dict:
+        """Side-by-side comparison of 2+ units WITHIN ONE property. dimensions can include rent, sqft, market_rent, balance, bedrooms, bathrooms. In compare mode pass `property_code` to pick which property."""
+        c = _pick_code(property_code)
+        if isinstance(c, dict): return c
         return SQL_TOOLS["compare_units"]["fn"](
-            primary_code, unit_numbers=unit_numbers, dimensions=dimensions
+            c, unit_numbers=unit_numbers, dimensions=dimensions
         )
 
     @tool
     def compare_properties(dimension: str = "avg_rent", month: str | None = None) -> dict:
-        """Aggregate one metric across the active comparison property codes. Use when the user asks to compare 2+ PROPERTIES (e.g. '115r vs 126r'). dimension: avg_rent | occupancy_pct | total_units | occupied_units | rent_roll_total."""
+        """Aggregate one metric across the active comparison property codes. Use when the user asks to compare 2+ PROPERTIES on a metric (e.g. '115r vs 126r avg rent'). dimension: avg_rent | occupancy_pct | total_units | occupied_units | rent_roll_total."""
         if scope.kind != "compare":
-            return {"error": "compare_properties requires 2+ property codes in scope. Currently scoped to one property."}
+            return {"error": "compare_properties requires 2+ property codes in scope. Add more via the Property dropdown."}
         return SQL_TOOLS["compare_properties"]["fn"](
             property_codes=scope.codes, dimension=dimension, month=month
         )
@@ -276,10 +308,13 @@ def _build_tools(scope: ScopeDecision):
         lease_ends_before: str | None = None,
         lease_ends_after: str | None = None,
         limit: int = 50,
+        property_code: str | None = None,
     ) -> dict:
-        """Filtered list of units. Combine any of: unit_type, bedrooms, min_rent, max_rent, occupied, lease_ends_before/after (YYYY-MM-DD)."""
+        """Filtered list of units. Combine any of: unit_type, bedrooms, min_rent, max_rent, occupied, lease_ends_before/after (YYYY-MM-DD). In compare mode pass `property_code` to pick which property in scope; otherwise defaults to the primary. To list units across BOTH properties in compare mode, call this tool TWICE (once per code)."""
+        c = _pick_code(property_code)
+        if isinstance(c, dict): return c
         return SQL_TOOLS["list_units"]["fn"](
-            primary_code,
+            c,
             unit_type=unit_type, bedrooms=bedrooms,
             min_rent=min_rent, max_rent=max_rent, occupied=occupied,
             lease_ends_before=lease_ends_before, lease_ends_after=lease_ends_after,
@@ -288,15 +323,15 @@ def _build_tools(scope: ScopeDecision):
 
     @tool
     def execute_scoped_sql(sql: str) -> dict:
-        """BACKSTOP — run a custom read-only SELECT against the rent-roll DB. Use when no curated tool fits a complex multi-condition question. Tables: properties, units, leases, rent_snapshots, rent_charge_lines. Property scope is auto-injected; do NOT add property_code filters yourself. Validated by sqlglot and executed as a read-only DB user."""
+        """BACKSTOP — run a custom read-only SELECT against the rent-roll DB. Use when no curated tool fits a complex multi-condition question. Tables: properties, units, leases, rent_snapshots, rent_charge_lines. Property scope is auto-injected (all codes in scope); do NOT add property_code filters yourself. Validated by sqlglot and executed as a read-only DB user."""
         return SQL_TOOLS["execute_scoped_sql"]["fn"](scope_codes, sql)
 
     @tool
-    def search_property_pages(query: str, k: int = 4) -> dict:
-        """Semantic search over the active property's MARKETING WEBSITE chunks (amenities, floor plans, pet policy, etc). Use for qualitative questions ('what amenities does it offer?', 'pet policy', 'community features'). Returns text chunks + source URLs."""
-        if not primary_code:
-            return {"error": "search_property_pages requires a single property in scope"}
-        return search_property(primary_code, query, k=k)
+    def search_property_pages(query: str, k: int = 4, property_code: str | None = None) -> dict:
+        """Semantic + image search over the active property's MARKETING WEBSITE chunks (amenities, floor plans, gallery, pet policy, etc). Returns text chunks AND a multimodal `images` list — relevant property photos are then surfaced as a gallery beneath your reply automatically. Use for qualitative questions and any user request to 'see/show/display' something visual. In compare mode pass `property_code` to pick which property."""
+        c = _pick_code(property_code)
+        if isinstance(c, dict): return c
+        return search_property_active(c, query, k=k)
 
     @tool
     def render_chart(
@@ -417,6 +452,19 @@ def _build_system_prompt(state: ChatState) -> str:
     )
     if scope.get("kind") == "single" and state.get("property_name"):
         base += f"Active property name: {state['property_name']}.\n"
+    if scope.get("kind") == "compare":
+        codes = scope.get("codes") or []
+        base += (
+            f"Compare mode is active across {len(codes)} properties: {', '.join(codes)}.\n"
+            f"  - Single-property tools (list_units, get_property_summary, get_unit_mix, get_occupancy,\n"
+            f"    get_rent_trend, get_expiring_leases, get_top_balances, get_unit_charges,\n"
+            f"    compare_units, search_property_pages) accept an optional `property_code` arg.\n"
+            f"  - When the user asks about ONE of the compare codes, pass property_code=<that_code>.\n"
+            f"  - When the user asks to compare 'across all' or names two codes, CALL THE TOOL "
+            f"ONCE PER property_code in scope (e.g. list_units(max_rent=2000, property_code='115r') "
+            f"AND list_units(max_rent=2000, property_code='134r') in the SAME turn — emit BOTH tool calls in parallel).\n"
+            f"  - For a single aggregate metric across all properties, use compare_properties.\n"
+        )
 
     base += (
         "\nTool selection guide (use the MOST specific):\n"
@@ -456,6 +504,18 @@ def _build_system_prompt(state: ChatState) -> str:
         "same chart with different data — get the data right first, THEN render.\n"
         "  - In your final natural-language reply, refer to the chart by title only "
         "(e.g. \"the pie chart above shows…\"). Just narrate the numbers.\n"
+        "\nImages / photos — read carefully:\n"
+        "  - The UI renders relevant property photos as a gallery beneath your reply "
+        "automatically whenever search_property_pages is called. The user CAN see them.\n"
+        "  - If the user asks to 'show', 'display', 'see', or otherwise reference an "
+        "image / photo / picture / view / look — you MUST call search_property_pages "
+        "with a query that captures what they want to see (e.g. 'pool', 'kitchen', "
+        "'river view'). This applies on FOLLOW-UP turns too — re-call the tool, don't "
+        "assume images from a previous turn are still on screen.\n"
+        "  - NEVER say \"I can't display images\". Calling search_property_pages IS how "
+        "images get shown. NEVER embed `![](...)` markdown image links — they will be "
+        "stripped from your reply. Talk about the images briefly, then let the gallery "
+        "do the work.\n"
         "\nMulti-step reasoning:\n"
         "  - Decompose complex requests BEFORE charting. Example: for "
         "'compare A103 and A104', if `compare_units` returns "
@@ -506,12 +566,16 @@ def _make_llm(state: ChatState):
     model = state.get("model") or "gpt-4o-mini"
     temperature = 0.2
 
+    # streaming=True is required for LangGraph's `messages` stream mode to
+    # surface token chunks. The sync .invoke() path still aggregates them
+    # at the call site, so non-streaming callers see the same final result.
     if provider == "openai":
         if not _settings.openai_api_key:
             raise ProviderUnavailable("OPENAI_API_KEY not set")
         return ChatOpenAI(
             model=model, temperature=temperature,
             api_key=_settings.openai_api_key,
+            streaming=True,
         )
 
     if provider == "anthropic":
@@ -521,6 +585,7 @@ def _make_llm(state: ChatState):
         return ChatAnthropic(
             model=model, temperature=temperature,
             api_key=_settings.anthropic_api_key,
+            streaming=True,
         )
 
     if provider == "gemini":
@@ -583,17 +648,25 @@ def clarify(state: ChatState) -> dict[str, Any]:
     scope = state.get("scope") or {}
     kind = scope.get("kind")
 
+    # In v3 the resolver no longer emits `conflict` — dropdown+message
+    # disagreement is auto-promoted to `compare`. We still defensively
+    # handle it in case external resumes carry the old kind.
     if kind == "conflict":
+        q_code = scope.get("query_code")
+        d_code = scope.get("dropdown_code")
         question = (
-            f"Your message mentioned property **{scope.get('query_code')}** "
-            f"but the dropdown is set to **{scope.get('dropdown_code')}**. "
-            f"Which property should I use?"
+            f"Your message mentioned **{q_code}** but the dropdown has **{d_code}**. "
+            f"How should I scope this turn?"
         )
-        options = [scope.get("query_code"), scope.get("dropdown_code")]
+        options = [
+            f"compare {d_code} and {q_code}",  # NEW: explicit compare
+            q_code,
+            d_code,
+        ]
     elif kind == "missing":
         question = (
-            "Which property are you asking about? I couldn't find a property "
-            "code in your message and no property is selected."
+            "Which property are you asking about? I didn't find a property "
+            "code in your message and none is selected in the dropdown."
         )
         options = scope.get("available") or []
     else:
@@ -607,7 +680,14 @@ def clarify(state: ChatState) -> dict[str, Any]:
     })
 
     if isinstance(user_choice, str):
-        chosen = [c.strip().lower() for c in user_choice.split(",") if c.strip()]
+        # Accept compound phrases like "compare 115r and 134r" by extracting
+        # all property-code tokens from the reply.
+        from ..guardrails.scope import extract_codes_from_message
+        codes_in_reply = extract_codes_from_message(user_choice)
+        if codes_in_reply:
+            chosen = codes_in_reply
+        else:
+            chosen = [c.strip().lower() for c in user_choice.split(",") if c.strip()]
     elif isinstance(user_choice, list):
         chosen = [c.strip().lower() for c in user_choice if isinstance(c, str)]
     else:
@@ -850,14 +930,12 @@ def _collect_chart_attempts(history: list[ToolStep]) -> tuple[list[dict], list[d
     return [by_key[k] for k in order], failures
 
 
-# Strip hallucinated inline images: `![alt](data:image/...;base64,...)` etc.
-# The agent's prompt forbids these, but defense-in-depth keeps the UI clean
-# even if it slips. We DO allow legit external image URLs (rare but possible
-# for property marketing images surfaced by RAG).
-_INLINE_IMG_RE = re.compile(
-    r"!\[[^\]]*\]\((?:data:|<svg)[^)]*\)",
-    re.IGNORECASE | re.DOTALL,
-)
+# Strip ALL inline images from the markdown body. RAG v2 surfaces images as
+# proper `image` UI components rendered as a gallery beneath the message, so
+# the LLM should never embed `![](...)` in the prose. We strip even legit
+# external URLs since they're either (a) duplicates of the gallery or (b)
+# the LLM hallucinating a working URL out of the captions it saw.
+_INLINE_IMG_RE = re.compile(r"!\[[^\]]*\]\([^)]*\)", re.IGNORECASE | re.DOTALL)
 
 
 def _scrub_inline_images(text: str) -> str:
@@ -942,7 +1020,7 @@ def compose(state: ChatState) -> dict[str, Any]:
         if failure_note:
             answer = (answer + "\n\n" + failure_note).strip()
 
-    # Sources: from the last successful RAG step (if any).
+    # Sources + images: from the last successful RAG step (if any).
     sources: list[dict] = []
     last_rag = next(
         (s for s in reversed(history)
@@ -950,7 +1028,22 @@ def compose(state: ChatState) -> dict[str, Any]:
         None,
     )
     if last_rag and isinstance(last_rag.get("result"), dict):
-        sources = last_rag["result"].get("sources") or []
+        rag_result = last_rag["result"]
+        sources = rag_result.get("sources") or []
+        # v2 returns relevant images alongside text chunks — surface them as
+        # `image` UIComponents so the frontend renders them inline.
+        for img in (rag_result.get("images") or []):
+            if not isinstance(img, dict) or not img.get("url"):
+                continue
+            components.append({
+                "type": "image",
+                "title": img.get("caption") or img.get("section_path") or "Image",
+                "data": {
+                    "src": img["url"],
+                    "caption": img.get("caption") or "",
+                    "source_url": img.get("source_url") or "",
+                },
+            })
 
     return {
         "answer_markdown": _scrub_inline_images(answer),

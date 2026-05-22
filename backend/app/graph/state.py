@@ -53,7 +53,7 @@ class ChatState(TypedDict, total=False):
 
     # --- inputs / context ---
     user_message: str
-    dropdown_property_code: str | None
+    dropdown_property_code: Any  # str | list[str] | None — single or multi-select
     llm_provider: str
     model: str
     conversation_id: str | None

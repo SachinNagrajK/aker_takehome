@@ -18,8 +18,20 @@ requests==2.32.3
 beautifulsoup4==4.12.3
 lxml==5.3.0
 
-# RAG
+# RAG (v1)
 chromadb==0.5.15
+
+# RAG v2 — multimodal ingestion (docling) + jina-clip-v2 ONNX int8 embeddings
+docling==2.91.0
+transformers>=4.45,<5
+onnxruntime>=1.18
+onnx>=1.16
+huggingface_hub>=0.24
+pillow>=10.0
+numpy>=1.26
+einops>=0.8
+sentencepiece>=0.2
+timm>=1.0
 
 # Orchestration — LangGraph 1.x with native interrupt/Command resume
 langgraph>=1.0,<2

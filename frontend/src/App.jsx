@@ -1,15 +1,12 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
+import { Building2 } from 'lucide-react'
 import { api } from './api.js'
 import PropertySelector from './components/PropertySelector.jsx'
 import LLMSelector from './components/LLMSelector.jsx'
 import Composer from './components/Composer.jsx'
 import Message from './components/Message.jsx'
-import ComponentRenderer from './components/ComponentRenderer.jsx'
 import ClarificationCard from './components/ClarificationCard.jsx'
-import ToolTrace from './components/ToolTrace.jsx'
 
-// Generate a per-conversation id so the backend can resume interrupted
-// graph runs (LangGraph checkpointer thread_id).
 function genConversationId() {
   return (crypto?.randomUUID?.() || `${Date.now()}-${Math.random().toString(36).slice(2)}`)
 }
@@ -19,19 +16,17 @@ const SUGGESTIONS = [
   'Show me the unit mix breakdown.',
   'How has the average rent changed over the year?',
   'Which leases are expiring in the next 90 days?',
-  'What amenities does this property offer?',
+  'Show me the gallery and amenities',
   'Which units have the highest outstanding balance?',
 ]
 
 export default function App() {
   const [properties, setProperties] = useState([])
   const [llms, setLlms] = useState([])
-  const [propertyCode, setPropertyCode] = useState('')
+  // v3: propertyCodes is an ARRAY now to support compare mode from the dropdown.
+  const [propertyCodes, setPropertyCodes] = useState([])
   const [llm, setLlm] = useState(null)
   const [messages, setMessages] = useState([])
-  const [components, setComponents] = useState([])
-  const [sources, setSources] = useState([])
-  const [toolTrace, setToolTrace] = useState([])
   const [pendingClarification, setPendingClarification] = useState(null)
   const [conversationId, setConversationId] = useState(genConversationId())
   const [lastUserMessage, setLastUserMessage] = useState('')
@@ -39,14 +34,13 @@ export default function App() {
   const [bootError, setBootError] = useState(null)
   const scrollRef = useRef(null)
 
-  // Boot: fetch /properties and /llms in parallel.
   useEffect(() => {
     (async () => {
       try {
         const [props, llmList] = await Promise.all([api.properties(), api.llms()])
         setProperties(props)
         setLlms(llmList)
-        if (props.length) setPropertyCode(props[0].property_code)
+        if (props.length) setPropertyCodes([props[0].property_code])
         const firstAvail = llmList.find((l) => l.available)
         if (firstAvail) setLlm({ provider: firstAvail.provider, model: firstAvail.models[0] })
       } catch (e) {
@@ -55,115 +49,186 @@ export default function App() {
     })()
   }, [])
 
-  // Auto-scroll messages to bottom when a new one arrives.
   useEffect(() => {
     const el = scrollRef.current
     if (el) el.scrollTop = el.scrollHeight
   }, [messages])
 
-  // Whenever property changes, clear the chat, components, and conversation.
+  // Whenever the dropdown scope changes (add/remove a code) → fresh conversation.
+  const propertyCodesKey = propertyCodes.join(',')
   useEffect(() => {
     setMessages([])
-    setComponents([])
-    setSources([])
-    setToolTrace([])
     setPendingClarification(null)
     setConversationId(genConversationId())
-  }, [propertyCode])
+  }, [propertyCodesKey])
 
+  // For the header pill we summarise the active selection.
   const activeProperty = useMemo(
-    () => properties.find((p) => p.property_code === propertyCode),
-    [properties, propertyCode],
+    () => (propertyCodes.length === 1
+      ? properties.find((p) => p.property_code === propertyCodes[0])
+      : null),
+    [properties, propertyCodesKey],
   )
 
-  function applyChatResponse(res, replaceLastThinking = true) {
-    if (res.clarification) {
-      // Paused at an interrupt — render the question, don't push a final reply.
-      setPendingClarification(res.clarification)
-      setMessages((m) => (replaceLastThinking ? m.slice(0, -1) : m))
-      return
+  // Stream a single chat turn. Reasoning lines accumulate in the assistant
+  // message's `progress` array while tokens fill `content`. When `done`
+  // fires we replace the streaming bubble with the final structured response.
+  async function streamChat(payload) {
+    setBusy(true)
+    // Append a streaming-placeholder assistant message; we'll mutate it in place.
+    setMessages((m) => [
+      ...m,
+      { role: 'assistant_streaming', content: '', progress: [], meta: {} },
+    ])
+
+    const updateLast = (mutator) => {
+      setMessages((m) => {
+        if (m.length === 0) return m
+        const next = m.slice()
+        const last = next[next.length - 1]
+        if (last.role !== 'assistant_streaming') return m
+        next[next.length - 1] = mutator(last)
+        return next
+      })
     }
-    setPendingClarification(null)
-    setMessages((m) => {
-      const next = replaceLastThinking ? m.slice(0, -1) : m
-      next.push({
-        role: 'assistant',
-        content: res.answer_markdown,
-        meta: {
-          route: res.route,
-          llm: res.llm,
-          scope_enforced: res.scope_enforced,
-          scope_kind: res.scope_kind,
-          scope_source: res.scope_source,
-          property_code: res.property_code,
-          property_codes: res.property_codes,
-          gave_up: res.gave_up,
+
+    const setBubbleError = (msg) => {
+      setMessages((m) => {
+        if (m.length === 0) return m
+        const next = m.slice()
+        // If the last bubble is the streaming one, replace it; otherwise append.
+        if (next[next.length - 1].role === 'assistant_streaming') {
+          next[next.length - 1] = { role: 'error', content: msg }
+        } else {
+          next.push({ role: 'error', content: msg })
+        }
+        return next
+      })
+    }
+
+    try {
+      await api.chatStream(payload, {
+        onEvent: (evt) => {
+          switch (evt.type) {
+            case 'open':
+              if (evt.conversation_id) setConversationId(evt.conversation_id)
+              break
+            case 'step':
+              updateLast((b) => ({
+                ...b,
+                progress: [...b.progress, {
+                  kind: 'step', text: evt.message, node: evt.node, status: 'ok',
+                }],
+              }))
+              break
+            case 'tool':
+              updateLast((b) => ({
+                ...b,
+                progress: [...b.progress, {
+                  kind: 'tool', text: evt.reasoning, tool: evt.tool, status: 'running',
+                }],
+              }))
+              break
+            case 'tool_end':
+              updateLast((b) => {
+                const prog = b.progress.slice()
+                // Find the most recent running entry for this tool name.
+                for (let i = prog.length - 1; i >= 0; i--) {
+                  if (prog[i].kind === 'tool' && prog[i].tool === evt.tool && prog[i].status === 'running') {
+                    prog[i] = {
+                      ...prog[i],
+                      status: evt.ok ? 'ok' : 'err',
+                      duration_ms: evt.duration_ms,
+                      error: evt.error,
+                    }
+                    break
+                  }
+                }
+                return { ...b, progress: prog }
+              })
+              break
+            case 'delta':
+              updateLast((b) => ({ ...b, content: (b.content || '') + evt.text }))
+              break
+            case 'clarification':
+              setPendingClarification(evt.payload)
+              // Pop the streaming bubble — clarification card replaces it.
+              setMessages((m) => {
+                if (m.length === 0) return m
+                if (m[m.length - 1].role === 'assistant_streaming') return m.slice(0, -1)
+                return m
+              })
+              break
+            case 'done': {
+              const r = evt.response || {}
+              // Stream ended — coerce any still-running progress entry to ok
+              // so no spinner is left frozen.
+              updateLast((b) => {
+                const finalProgress = (b.progress || []).map((p) =>
+                  p.status === 'running' ? { ...p, status: 'ok' } : p
+                )
+                return {
+                  role: 'assistant',
+                  content: r.answer_markdown ?? b.content,
+                  meta: {
+                    route: r.route,
+                    llm: r.llm,
+                    scope_enforced: r.scope_enforced,
+                    scope_kind: r.scope_kind,
+                    scope_source: r.scope_source,
+                    property_code: r.property_code,
+                    property_codes: r.property_codes,
+                    gave_up: r.gave_up,
+                    components: r.components || [],
+                    sources: r.sources || [],
+                    tool_trace: r.tool_trace || [],
+                    progress: finalProgress,
+                  },
+                }
+              })
+              if (r.conversation_id) setConversationId(r.conversation_id)
+              break
+            }
+            case 'error':
+              setBubbleError(evt.message || 'Stream error')
+              break
+            default:
+              break
+          }
         },
       })
-      return next
-    })
-    setComponents(res.components || [])
-    setSources(res.sources || [])
-    setToolTrace(res.tool_trace || [])
+    } catch (e) {
+      setBubbleError(e.message)
+    } finally {
+      setBusy(false)
+    }
   }
 
   async function handleSend(text) {
     if (!llm) return
-    setBusy(true)
     setLastUserMessage(text)
-    setMessages((m) => [
-      ...m,
-      { role: 'user', content: text },
-      { role: 'thinking' },
-    ])
-    try {
-      const res = await api.chat({
-        property_code: propertyCode || null,
-        message: text,
-        llm_provider: llm.provider,
-        model: llm.model,
-        conversation_id: conversationId,
-      })
-      applyChatResponse(res)
-    } catch (e) {
-      setMessages((m) => {
-        const next = m.slice(0, -1)
-        next.push({ role: 'error', content: e.message })
-        return next
-      })
-    } finally {
-      setBusy(false)
-    }
+    setMessages((m) => [...m, { role: 'user', content: text }])
+    await streamChat({
+      property_code: propertyCodes.length === 1 ? propertyCodes[0] : (propertyCodes.length > 0 ? propertyCodes : null),
+      message: text,
+      llm_provider: llm.provider,
+      model: llm.model,
+      conversation_id: conversationId,
+    })
   }
 
   async function handleClarificationReply(choice) {
     if (!choice || !llm) return
-    setBusy(true)
     setPendingClarification(null)
-    setMessages((m) => [
-      ...m,
-      { role: 'user', content: `(chose ${choice})` },
-      { role: 'thinking' },
-    ])
-    try {
-      const res = await api.chat({
-        property_code: propertyCode || null,
-        message: lastUserMessage,
-        llm_provider: llm.provider,
-        model: llm.model,
-        conversation_id: conversationId,
-        clarification_reply: choice,
-      })
-      applyChatResponse(res)
-    } catch (e) {
-      setMessages((m) => {
-        const next = m.slice(0, -1)
-        next.push({ role: 'error', content: e.message })
-        return next
-      })
-    } finally {
-      setBusy(false)
-    }
+    setMessages((m) => [...m, { role: 'user', content: `(chose ${choice})` }])
+    await streamChat({
+      property_code: propertyCodes.length === 1 ? propertyCodes[0] : (propertyCodes.length > 0 ? propertyCodes : null),
+      message: lastUserMessage,
+      llm_provider: llm.provider,
+      model: llm.model,
+      conversation_id: conversationId,
+      clarification_reply: choice,
+    })
   }
 
   if (bootError) {
@@ -183,20 +248,30 @@ export default function App() {
   return (
     <div className="app">
       <div className="topbar">
-        <div className="brand">Property AI Assistant</div>
+        <div className="brand">
+          <span className="brand-icon"><Building2 size={16} /></span>
+          Property AI
+        </div>
         <PropertySelector
           properties={properties}
-          value={propertyCode}
-          onChange={setPropertyCode}
+          value={propertyCodes}
+          onChange={setPropertyCodes}
         />
-        <LLMSelector
-          llms={llms}
-          value={llm}
-          onChange={setLlm}
-        />
-        {activeProperty && (
+        <LLMSelector llms={llms} value={llm} onChange={setLlm} />
+        {propertyCodes.length === 1 && activeProperty && (
           <div className="scope-pill">
-            Scope: <strong>{activeProperty.property_code}</strong> · {activeProperty.property_name}
+            <span>Scope</span>
+            <strong>{activeProperty.property_code}</strong>
+            <span style={{ opacity: 0.7 }}>·</span>
+            <span>{activeProperty.property_name}</span>
+          </div>
+        )}
+        {propertyCodes.length > 1 && (
+          <div className="scope-pill" title={propertyCodes.join(', ')}>
+            <span>Compare</span>
+            <strong>{propertyCodes.length} properties</strong>
+            <span style={{ opacity: 0.7 }}>·</span>
+            <span>{propertyCodes.join(' ↔ ')}</span>
           </div>
         )}
       </div>
@@ -204,63 +279,53 @@ export default function App() {
       <div className="main">
         <div className="chat">
           <div className="messages" ref={scrollRef}>
-            {messages.length === 0 && (
-              <div style={{ color: 'var(--muted)', marginTop: '20vh', textAlign: 'center' }}>
-                <p>Ask anything about <strong>{activeProperty?.property_name || '...'}</strong>.</p>
-                <p style={{ fontSize: 12 }}>Pick a suggestion below or type your own question.</p>
-              </div>
-            )}
-            {messages.map((msg, i) => <Message key={i} msg={msg} />)}
-          </div>
-
-          {pendingClarification && (
-            <ClarificationCard
-              clarification={pendingClarification}
-              onReply={handleClarificationReply}
-              disabled={busy}
-            />
-          )}
-
-          {!pendingClarification && (
-            <div className="suggestions">
-              {SUGGESTIONS.map((s) => (
-                <button
-                  key={s}
-                  className="chip"
-                  disabled={busy}
-                  onClick={() => handleSend(s)}
-                  style={{ background: 'transparent', color: 'inherit', padding: '6px 12px', border: '1px solid var(--border)' }}
-                >
-                  {s}
-                </button>
-              ))}
-            </div>
-          )}
-
-          <Composer disabled={busy || !!pendingClarification} onSend={handleSend} />
-        </div>
-
-        <div className="components-pane">
-          {components.length === 0 && sources.length === 0 && toolTrace.length === 0 ? (
-            <div className="empty">Components, sources, and tool trace will appear here.</div>
-          ) : (
-            <>
-              {components.map((c, i) => (
-                <ComponentRenderer key={i} component={c} index={i} />
-              ))}
-              {sources.length > 0 && (
-                <div className="sources">
-                  <div className="source-title">Sources</div>
-                  {sources.map((s, i) => (
-                    <a key={i} href={s.url} target="_blank" rel="noreferrer">
-                      {s.label}
-                    </a>
-                  ))}
+            <div className="messages-inner">
+              {messages.length === 0 && (
+                <div className="empty-state">
+                  <h2>
+                    {propertyCodes.length === 0
+                      ? 'Pick a property to start'
+                      : propertyCodes.length === 1
+                        ? `Ask anything about ${activeProperty?.property_name || '…'}`
+                        : `Comparing ${propertyCodes.length} properties`}
+                  </h2>
+                  <p>
+                    {propertyCodes.length > 1
+                      ? 'Ask "compare avg rent" or "show units under $2000 across all" — answers stay in this chat with charts and photos inline.'
+                      : 'Try a question below or type your own — answers include charts, tables, and photos right in the conversation.'}
+                  </p>
                 </div>
               )}
-              {toolTrace.length > 0 && <ToolTrace steps={toolTrace} />}
-            </>
-          )}
+              {messages.map((msg, i) => <Message key={i} msg={msg} />)}
+            </div>
+          </div>
+
+          <div className="composer-wrap">
+            {pendingClarification && (
+              <ClarificationCard
+                clarification={pendingClarification}
+                onReply={handleClarificationReply}
+                disabled={busy}
+              />
+            )}
+
+            {!pendingClarification && messages.length === 0 && (
+              <div className="suggestions">
+                {SUGGESTIONS.map((s) => (
+                  <button
+                    key={s}
+                    className="chip"
+                    disabled={busy}
+                    onClick={() => handleSend(s)}
+                  >
+                    {s}
+                  </button>
+                ))}
+              </div>
+            )}
+
+            <Composer disabled={busy || !!pendingClarification} onSend={handleSend} />
+          </div>
         </div>
       </div>
     </div>

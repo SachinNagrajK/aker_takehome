@@ -1,5 +1,6 @@
-// Dynamic dispatcher — picks the right visual based on `type`. Adding a new
-// component type is a single switch entry plus its file.
+// Dispatcher — picks the right visual based on `type`.
+// `image` types are collected by Message.jsx and rendered together via
+// ImageGallery rather than one-card-per-image.
 import KPICard from './KPICard.jsx'
 import DataTable from './DataTable.jsx'
 import LineChartComp from './LineChartComp.jsx'
@@ -7,7 +8,7 @@ import BarChartComp from './BarChartComp.jsx'
 import ComparisonChart from './ComparisonChart.jsx'
 import PieChartComp from './PieChartComp.jsx'
 
-export default function ComponentRenderer({ component, index }) {
+export default function ComponentRenderer({ component }) {
   const { type, title, data } = component
   switch (type) {
     case 'kpi':              return <KPICard title={title} data={data} />
@@ -21,7 +22,7 @@ export default function ComponentRenderer({ component, index }) {
       return (
         <div className="card">
           <div className="card-title">Unknown component: {type}</div>
-          <pre style={{ fontSize: 11, overflow: 'auto' }}>
+          <pre style={{ fontSize: 11, overflow: 'auto', color: 'var(--muted)' }}>
             {JSON.stringify({ title, data }, null, 2)}
           </pre>
         </div>

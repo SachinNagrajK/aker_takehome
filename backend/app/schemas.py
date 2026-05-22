@@ -19,8 +19,9 @@ class LLMOption(BaseModel):
 
 class ChatRequest(BaseModel):
     # v2: property_code is OPTIONAL — scope may also come from the message
-    # text or from a clarification follow-up.
-    property_code: str | None = None
+    # text or from a clarification follow-up. v3: accepts a single code OR
+    # a list of codes (multi-select dropdown → compare mode from the start).
+    property_code: str | list[str] | None = None
     message: str = Field(min_length=1)
     llm_provider: str = "openai"
     model: str = "gpt-4o-mini"
@@ -42,6 +43,7 @@ class UIComponent(BaseModel):
         "kpi", "table",
         "bar_chart", "line_chart", "comparison_chart",
         "pie_chart", "donut_chart",
+        "image",
     ]
     title: str
     # Free-form payload validated per type by the renderer.

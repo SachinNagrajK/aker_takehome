@@ -197,50 +197,63 @@ def _all_property_codes() -> list[str]:
         ]
 
 
+def _normalize_dropdown(dropdown_code) -> list[str]:
+    """Accept either a single code or a list (multi-select). Returns valid lower-cased codes."""
+    if not dropdown_code:
+        return []
+    raw = dropdown_code if isinstance(dropdown_code, list) else [dropdown_code]
+    out: list[str] = []
+    seen: set[str] = set()
+    for v in raw:
+        if not isinstance(v, str):
+            continue
+        c = v.strip().lower()
+        if not c or c in seen:
+            continue
+        try:
+            validate_property_code(c)
+        except (UnknownPropertyError, ScopeViolationError):
+            continue
+        seen.add(c)
+        out.append(c)
+    return out
+
+
 def resolve_scope(
-    dropdown_code: str | None,
+    dropdown_code,
     message: str,
 ) -> ScopeDecision:
     """Combine dropdown + message into one ScopeDecision.
 
-    Resolution rules (matches the v2 plan):
+    Smart resolution rules:
 
-      A. Multiple valid codes in message  -> `compare`
-      B. One valid code in message
-            - matches dropdown            -> `single`(source="query")
-            - dropdown empty              -> `single`(source="query")
-            - mismatches dropdown         -> `conflict`  (ask user)
-      C. No valid code in message
-            - dropdown set and valid      -> `single`(source="dropdown")
-            - dropdown empty              -> `missing`  (ask user)
+      - Union of dropdown codes + message-mentioned codes (deduped, ordered)
+      - 2+ codes -> `compare`
+      - 1 code   -> `single`
+      - 0 codes  -> `missing` (ask user)
+
+    Dropdown + message disagreement is no longer a conflict — we now treat
+    "I'm scoped to X but asking about Y" as a request to consider both.
+    The user explicitly controls multi-scope via the multi-select dropdown.
     """
     msg_codes = extract_codes_from_message(message)
-    dropdown_clean = (dropdown_code or "").strip().lower() or None
-    if dropdown_clean:
-        # If the dropdown value isn't a real code, treat as if empty.
-        try:
-            validate_property_code(dropdown_clean)
-        except (UnknownPropertyError, ScopeViolationError):
-            dropdown_clean = None
+    dropdown_codes = _normalize_dropdown(dropdown_code)
 
-    # Case A: multiple codes in message
-    if len(msg_codes) > 1:
-        return ScopeDecision(kind="compare", codes=msg_codes, source="query")
+    union: list[str] = []
+    for c in dropdown_codes + msg_codes:
+        if c not in union:
+            union.append(c)
 
-    # Case B: exactly one code in message
-    if len(msg_codes) == 1:
-        q = msg_codes[0]
-        if dropdown_clean and dropdown_clean != q:
-            return ScopeDecision(
-                kind="conflict",
-                dropdown_code=dropdown_clean,
-                query_code=q,
-            )
-        return ScopeDecision(kind="single", code=q, source="query")
+    if len(union) >= 2:
+        source = "query" if msg_codes and not dropdown_codes else "dropdown"
+        return ScopeDecision(kind="compare", codes=union, source=source)
 
-    # Case C: no codes in message
-    if dropdown_clean:
-        return ScopeDecision(kind="single", code=dropdown_clean, source="dropdown")
+    if len(union) == 1:
+        code = union[0]
+        if msg_codes and not dropdown_codes:
+            return ScopeDecision(kind="single", code=code, source="query")
+        return ScopeDecision(kind="single", code=code, source="dropdown")
+
     return ScopeDecision(
         kind="missing",
         available=_all_property_codes(),
