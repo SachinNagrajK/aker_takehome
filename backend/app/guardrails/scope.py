@@ -197,6 +197,140 @@ def _all_property_codes() -> list[str]:
         ]
 
 
+# ---------------------------------------------------------------------------
+# v5: Time-scope detection
+# ---------------------------------------------------------------------------
+#
+# A second scope dimension parallel to property scope. The rent-roll holds 12
+# monthly snapshots per property; charges, rent, and balances vary across
+# them, so any time-sensitive answer needs to know "as of which month".
+#
+# Resolver outputs one of:
+#   - kind="latest"           explicit "latest/current/recent/now" intent
+#   - kind="specific" month=  explicit month like "April 2025" / "2025-04"
+#   - kind="missing"          time-sensitive question, no month referenced
+#   - kind="any"              question doesn't need a month (e.g. amenities)
+
+# Words that suggest the user expects time-sensitive numbers from the rent
+# roll. If any appear in the message AND no explicit month or "latest" is
+# present, we ask which month they mean.
+_TIME_SENSITIVE_TERMS = (
+    "rent", "rents", "charge", "charges", "fee", "fees", "deposit", "deposits",
+    "balance", "balances", "owed", "owe", "due", "paid", "owing",
+    "occup", "vacant", "vacancy", "occupied",
+    "expir", "lease end", "moved out", "move-out", "move out",
+    "monthly", "snapshot", "as of", "month",
+    "sum", "total", "average", "avg",
+    "kpi", "summary", "breakdown", "mix", "trend",
+    "top balance", "delinquent", "outstanding",
+)
+
+# Keywords meaning "use the latest snapshot".
+_TIME_LATEST_TERMS = (
+    "latest", "current", "currently", "newest", "most recent", "recent",
+    "now", "today", "right now", "present", "at present", "as of now",
+    "this month", "this period",
+)
+
+# Explicit-month patterns. We deliberately keep them narrow — only the user
+# obviously naming a month should bypass the clarification.
+_MONTH_NAME_RE = (
+    r"(?:january|february|march|april|may|june|july|august|"
+    r"september|sept|sep|october|november|december|"
+    r"jan|feb|mar|apr|jun|jul|aug|oct|nov|dec)"
+)
+_MONTH_NUM_MAP = {
+    "jan": 1, "feb": 2, "mar": 3, "apr": 4, "may": 5, "jun": 6,
+    "jul": 7, "aug": 8, "sep": 9, "sept": 9, "oct": 10, "nov": 11, "dec": 12,
+    "january": 1, "february": 2, "march": 3, "april": 4, "june": 6,
+    "july": 7, "august": 8, "september": 9, "october": 10, "november": 11,
+    "december": 12,
+}
+_TIME_PATTERNS = [
+    # "April 2025", "Apr 2025", "in April 2025"
+    re.compile(rf"\b(?:in\s+)?({_MONTH_NAME_RE})\s+(20\d{{2}})\b", re.I),
+    # "2025-04", "2025-4"
+    re.compile(r"\b(20\d{2})[-/](\d{1,2})\b"),
+    # "04/2025", "4/2025"
+    re.compile(r"\b(\d{1,2})/(20\d{2})\b"),
+]
+
+
+def _try_parse_month(message: str):
+    """Return (year, month) tuple if the message contains an explicit month."""
+    if not message:
+        return None
+    for i, pat in enumerate(_TIME_PATTERNS):
+        m = pat.search(message)
+        if not m:
+            continue
+        if i == 0:  # MONTH_NAME YEAR
+            mo = _MONTH_NUM_MAP.get(m.group(1).lower())
+            yr = int(m.group(2))
+        elif i == 1:  # YYYY-MM
+            yr = int(m.group(1)); mo = int(m.group(2))
+        else:  # MM/YYYY
+            mo = int(m.group(1)); yr = int(m.group(2))
+        if mo and 1 <= mo <= 12 and 2000 <= yr <= 2100:
+            return (yr, mo)
+    return None
+
+
+def _is_time_sensitive(message: str) -> bool:
+    if not message:
+        return False
+    m = message.lower()
+    return any(term in m for term in _TIME_SENSITIVE_TERMS)
+
+
+def _is_latest_intent(message: str) -> bool:
+    if not message:
+        return False
+    m = message.lower()
+    return any(term in m for term in _TIME_LATEST_TERMS)
+
+
+def extract_time_intent(message: str) -> dict:
+    """Classify the user's time intent. Returns a dict with `kind` and
+    optionally `month` (an ISO 'YYYY-MM-01' string for downstream tools)."""
+    # 1. Explicit month wins.
+    parsed = _try_parse_month(message or "")
+    if parsed:
+        yr, mo = parsed
+        from datetime import date as _date
+        return {
+            "kind": "specific",
+            "month": _date(yr, mo, 1).isoformat(),
+            "label": f"{_date(yr, mo, 1).strftime('%B %Y')}",
+        }
+    # 2. Explicit "latest" intent.
+    if _is_latest_intent(message or ""):
+        return {"kind": "latest", "month": None, "label": "latest snapshot"}
+    # 3. No time reference. Is the question time-sensitive?
+    if _is_time_sensitive(message or ""):
+        return {"kind": "missing", "month": None, "label": None}
+    # 4. Not a time-sensitive question (e.g. amenities, photos).
+    return {"kind": "any", "month": None, "label": None}
+
+
+def available_snapshot_months() -> list[str]:
+    """All snapshot months in the DB, ISO date strings, newest first."""
+    from datetime import date as _date
+    from sqlalchemy import text
+    with session_scope() as s:
+        rows = s.execute(
+            text("SELECT DISTINCT snapshot_month FROM rent_snapshots ORDER BY snapshot_month DESC")
+        ).all()
+    out: list[str] = []
+    for r in rows:
+        v = r[0]
+        if isinstance(v, _date):
+            out.append(v.isoformat())
+        else:
+            out.append(str(v))
+    return out
+
+
 def _normalize_dropdown(dropdown_code) -> list[str]:
     """Accept either a single code or a list (multi-select). Returns valid lower-cased codes."""
     if not dropdown_code:

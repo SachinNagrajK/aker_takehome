@@ -50,8 +50,9 @@ def _stringify_dates(d: dict[str, Any]) -> dict[str, Any]:
 # 1. Property summary
 # ---------------------------------------------------------------------------
 
-def get_property_summary(property_code: str) -> dict[str, Any]:
-    """High-level KPIs for the property's most recent monthly snapshot."""
+def get_property_summary(property_code: str, snapshot_month: str | None = None) -> dict[str, Any]:
+    """High-level KPIs for one monthly snapshot. If `snapshot_month`
+    (YYYY-MM-DD) is omitted, the latest available month is used."""
     code = require_scope(property_code)
     with session_scope() as s:
         prop = s.execute(
@@ -65,13 +66,27 @@ def get_property_summary(property_code: str) -> dict[str, Any]:
         if prop is None:
             return {"property_code": code, "found": False}
 
-        latest_month = s.execute(
-            text("""
-                SELECT MAX(snapshot_month) FROM rent_snapshots
-                WHERE property_code = :code
-            """),
-            {"code": code},
-        ).scalar()
+        if snapshot_month:
+            try:
+                target = datetime.strptime(snapshot_month, "%Y-%m-%d").date()
+            except ValueError:
+                return {"property_code": code, "error": f"Invalid snapshot_month: {snapshot_month!r}. Use YYYY-MM-DD."}
+            # Confirm it exists for this property.
+            exists = s.execute(
+                text("SELECT 1 FROM rent_snapshots WHERE property_code=:c AND snapshot_month=:m LIMIT 1"),
+                {"c": code, "m": target},
+            ).scalar()
+            if not exists:
+                return {"property_code": code, "error": f"No snapshot exists for {code} in {target.isoformat()}."}
+            latest_month = target
+        else:
+            latest_month = s.execute(
+                text("""
+                    SELECT MAX(snapshot_month) FROM rent_snapshots
+                    WHERE property_code = :code
+                """),
+                {"code": code},
+            ).scalar()
 
         if latest_month is None:
             return {
@@ -295,10 +310,52 @@ def get_expiring_leases(
 # 6. Top outstanding balances
 # ---------------------------------------------------------------------------
 
-def get_top_balances(property_code: str, n: int = 10) -> dict[str, Any]:
-    """Top N leases by outstanding balance (most-owed first)."""
+def get_top_balances(
+    property_code: str,
+    n: int = 10,
+    snapshot_month: str | None = None,
+) -> dict[str, Any]:
+    """Top N leases by outstanding balance (most-owed first).
+
+    If `snapshot_month` (YYYY-MM-DD) is set, balances come from that
+    historical snapshot's `raw_row.balance`. Otherwise, latest-state
+    `leases.balance` is used.
+    """
     code = require_scope(property_code)
     n = max(1, min(int(n or 10), 50))
+
+    if snapshot_month:
+        try:
+            target = datetime.strptime(snapshot_month, "%Y-%m-%d").date()
+        except ValueError:
+            return {"property_code": code, "error": f"Invalid snapshot_month: {snapshot_month!r}"}
+        with session_scope() as s:
+            rows = _rows_to_dicts(s.execute(
+                text("""
+                    SELECT
+                        unit_number,
+                        JSON_UNQUOTE(JSON_EXTRACT(raw_row, '$.tenant_id'))   AS tenant_id,
+                        monthly_rent,
+                        CAST(JSON_EXTRACT(raw_row, '$.balance') AS DECIMAL(12,2)) AS balance,
+                        JSON_UNQUOTE(JSON_EXTRACT(raw_row, '$.lease_end'))   AS lease_end,
+                        CASE WHEN occupied THEN 'current' ELSE 'vacant' END  AS status
+                    FROM rent_snapshots
+                    WHERE property_code = :code
+                      AND snapshot_month = :month
+                      AND JSON_EXTRACT(raw_row, '$.balance') IS NOT NULL
+                    ORDER BY balance DESC
+                    LIMIT :n
+                """),
+                {"code": code, "month": target, "n": n},
+            ))
+        rows = [_stringify_dates(r) for r in rows]
+        return {
+            "property_code": code,
+            "snapshot_month": target.isoformat(),
+            "row_count": len(rows),
+            "rows": rows,
+        }
+
     with session_scope() as s:
         rows = _rows_to_dicts(s.execute(
             text("""
@@ -320,13 +377,195 @@ def get_top_balances(property_code: str, n: int = 10) -> dict[str, Any]:
     rows = [_stringify_dates(r) for r in rows]
     return {
         "property_code": code,
+        "snapshot_month": "latest",
         "row_count": len(rows),
         "rows": rows,
     }
 
 
 # ---------------------------------------------------------------------------
-# 7. Unit charges — every line item for one unit (preserves multiplicity)
+# 7. Lease deposits — Resident Deposit + Other Deposit columns from the
+#    source workbook (added in v4; previously dropped during ingestion).
+# ---------------------------------------------------------------------------
+
+def get_lease_deposits(
+    property_code: str,
+    n: int = 50,
+    snapshot_month: str | None = None,
+) -> dict[str, Any]:
+    """Per-unit resident & other deposits, plus an aggregate. Returns the top
+    `n` leases by resident_deposit (largest first). Aggregate covers ALL leases
+    in scope, not just the top n.
+
+    If `snapshot_month` is set (YYYY-MM-DD), deposits come from that historical
+    snapshot's raw_row. Otherwise, latest `leases` row is used.
+    """
+    code = require_scope(property_code)
+    n = max(1, min(int(n or 50), 200))
+
+    if snapshot_month:
+        try:
+            target = datetime.strptime(snapshot_month, "%Y-%m-%d").date()
+        except ValueError:
+            return {"property_code": code, "error": f"Invalid snapshot_month: {snapshot_month!r}"}
+        with session_scope() as s:
+            rows = _rows_to_dicts(s.execute(
+                text("""
+                    SELECT
+                        unit_number,
+                        JSON_UNQUOTE(JSON_EXTRACT(raw_row, '$.tenant_id'))         AS tenant_id,
+                        CAST(JSON_EXTRACT(raw_row, '$.resident_deposit') AS DECIMAL(12,2)) AS resident_deposit,
+                        CAST(JSON_EXTRACT(raw_row, '$.other_deposit')    AS DECIMAL(12,2)) AS other_deposit,
+                        monthly_rent,
+                        CAST(JSON_EXTRACT(raw_row, '$.balance')          AS DECIMAL(12,2)) AS balance,
+                        JSON_UNQUOTE(JSON_EXTRACT(raw_row, '$.move_in'))    AS lease_start,
+                        JSON_UNQUOTE(JSON_EXTRACT(raw_row, '$.lease_end'))  AS lease_end
+                    FROM rent_snapshots
+                    WHERE property_code=:code AND snapshot_month=:m
+                    ORDER BY resident_deposit DESC, unit_number
+                    LIMIT :n
+                """),
+                {"code": code, "m": target, "n": n},
+            ))
+            agg = s.execute(
+                text("""
+                    SELECT
+                        COUNT(*)                                                              AS leases,
+                        SUM(COALESCE(CAST(JSON_EXTRACT(raw_row, '$.resident_deposit') AS DECIMAL(12,2)), 0)) AS sum_resident_deposit,
+                        AVG(CAST(JSON_EXTRACT(raw_row, '$.resident_deposit') AS DECIMAL(12,2)))             AS avg_resident_deposit,
+                        SUM(COALESCE(CAST(JSON_EXTRACT(raw_row, '$.other_deposit')    AS DECIMAL(12,2)), 0)) AS sum_other_deposit
+                    FROM rent_snapshots
+                    WHERE property_code=:code AND snapshot_month=:m
+                """),
+                {"code": code, "m": target},
+            ).first()
+        agg_dict = dict(agg._mapping) if agg else {}
+        for k in ("sum_resident_deposit", "avg_resident_deposit", "sum_other_deposit"):
+            v = agg_dict.get(k)
+            if v is not None:
+                agg_dict[k] = float(v)
+        return {
+            "property_code": code,
+            "snapshot_month": target.isoformat(),
+            "row_count": len(rows),
+            "rows": rows,
+            "aggregate": agg_dict,
+        }
+
+    with session_scope() as s:
+        rows = _rows_to_dicts(s.execute(
+            text("""
+                SELECT
+                    unit_number,
+                    tenant_id,
+                    resident_deposit,
+                    other_deposit,
+                    monthly_rent,
+                    balance,
+                    lease_start,
+                    lease_end
+                FROM leases
+                WHERE property_code = :code
+                ORDER BY resident_deposit DESC, unit_number
+                LIMIT :n
+            """),
+            {"code": code, "n": n},
+        ))
+        agg = s.execute(
+            text("""
+                SELECT
+                    COUNT(*)                            AS leases,
+                    SUM(COALESCE(resident_deposit, 0))  AS sum_resident_deposit,
+                    AVG(resident_deposit)               AS avg_resident_deposit,
+                    SUM(COALESCE(other_deposit, 0))     AS sum_other_deposit,
+                    COUNT(other_deposit)                AS rows_with_other_deposit
+                FROM leases
+                WHERE property_code = :code
+            """),
+            {"code": code},
+        ).first()
+    rows = [_stringify_dates(r) for r in rows]
+    agg_dict = dict(agg._mapping) if agg else {}
+    for k in ("sum_resident_deposit", "avg_resident_deposit", "sum_other_deposit"):
+        v = agg_dict.get(k)
+        if v is not None:
+            agg_dict[k] = float(v)
+    return {
+        "property_code": code,
+        "snapshot_month": "latest",
+        "row_count": len(rows),
+        "rows": rows,
+        "aggregate": agg_dict,
+    }
+
+
+# ---------------------------------------------------------------------------
+# 8. Move-outs — leases with a recorded Move Out date (notice or already gone).
+# ---------------------------------------------------------------------------
+
+def get_move_outs(
+    property_code: str,
+    since: str | None = None,
+    until: str | None = None,
+) -> dict[str, Any]:
+    """Leases with a Move Out date set, optionally filtered to [since, until].
+
+    Both bounds are YYYY-MM-DD. Useful for "who is moving out this quarter?"
+    or "show move-outs after 2026-01-01".
+    """
+    code = require_scope(property_code)
+
+    def _parse(d: str | None):
+        if not d:
+            return None
+        try:
+            return datetime.strptime(d, "%Y-%m-%d").date()
+        except ValueError:
+            return None
+
+    since_d = _parse(since)
+    until_d = _parse(until)
+
+    sql_parts = ["WHERE property_code = :code", "AND move_out_date IS NOT NULL"]
+    params: dict[str, Any] = {"code": code}
+    if since_d:
+        sql_parts.append("AND move_out_date >= :since_d")
+        params["since_d"] = since_d
+    if until_d:
+        sql_parts.append("AND move_out_date <= :until_d")
+        params["until_d"] = until_d
+
+    with session_scope() as s:
+        rows = _rows_to_dicts(s.execute(
+            text(f"""
+                SELECT
+                    unit_number,
+                    tenant_id,
+                    move_out_date,
+                    lease_end,
+                    monthly_rent,
+                    resident_deposit,
+                    balance,
+                    status
+                FROM leases
+                {' '.join(sql_parts)}
+                ORDER BY move_out_date ASC
+                LIMIT 200
+            """),
+            params,
+        ))
+    rows = [_stringify_dates(r) for r in rows]
+    return {
+        "property_code": code,
+        "since": since_d.isoformat() if since_d else None,
+        "until": until_d.isoformat() if until_d else None,
+        "row_count": len(rows),
+        "rows": rows,
+    }
+
+
+# ---------------------------------------------------------------------------
+# 9. Unit charges — every line item for one unit (preserves multiplicity)
 # ---------------------------------------------------------------------------
 
 def get_unit_charges(
@@ -659,6 +898,24 @@ TOOLS: dict[str, dict[str, Any]] = {
         "fn": get_top_balances,
         "description": "Leases with highest outstanding balance (default top 10).",
         "params": ["n?"],
+    },
+    "get_lease_deposits": {
+        "fn": get_lease_deposits,
+        "description": (
+            "Resident Deposit + Other Deposit per lease, plus an aggregate "
+            "(sum, avg, count). Use for 'total deposits held', 'avg deposit', "
+            "'who paid the largest deposit?'."
+        ),
+        "params": ["n?"],
+    },
+    "get_move_outs": {
+        "fn": get_move_outs,
+        "description": (
+            "Leases with a recorded Move Out date, optionally filtered by date "
+            "range. Use for 'who is moving out this quarter?' / 'show move-outs "
+            "since 2026-01-01'."
+        ),
+        "params": ["since?", "until?"],
     },
     "get_unit_charges": {
         "fn": get_unit_charges,

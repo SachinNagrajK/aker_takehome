@@ -31,6 +31,7 @@ from .nodes import (
     agent,
     agent_should_continue,
     clarify,
+    clarify_time,
     compose,
     extract_scope,
     scope_router,
@@ -75,6 +76,7 @@ def _build():
 
     g.add_node("extract_scope", extract_scope)
     g.add_node("clarify", clarify)
+    g.add_node("clarify_time", clarify_time)
     g.add_node("enter_turn", enter_turn)
     g.add_node("agent", agent)
     g.add_node("tools", tools)
@@ -84,15 +86,21 @@ def _build():
     g.add_conditional_edges(
         "extract_scope",
         scope_router,
-        {"clarify": "clarify", "enter_turn": "enter_turn"},
+        {"clarify": "clarify", "clarify_time": "clarify_time", "enter_turn": "enter_turn"},
     )
-    # After the user answers the clarification, re-dispatch through the same
-    # router so an invalid reply ("garbage") loops back to clarify, and a
-    # valid one proceeds to enter_turn.
+    # After the user answers the property clarification, re-dispatch through
+    # the same router so an invalid reply loops back, a valid one proceeds.
     g.add_conditional_edges(
         "clarify",
         scope_router,
-        {"clarify": "clarify", "enter_turn": "enter_turn"},
+        {"clarify": "clarify", "clarify_time": "clarify_time", "enter_turn": "enter_turn"},
+    )
+    # Time-clarify: same idea. If the user's month reply is unparseable the
+    # router lands back on "clarify_time" until they pick something valid.
+    g.add_conditional_edges(
+        "clarify_time",
+        scope_router,
+        {"clarify": "clarify", "clarify_time": "clarify_time", "enter_turn": "enter_turn"},
     )
 
     g.add_edge("enter_turn", "agent")

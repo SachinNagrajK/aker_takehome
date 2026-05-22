@@ -53,6 +53,10 @@ class Lease(Base):
     monthly_rent: Mapped[float | None] = mapped_column(Float, nullable=True)
     balance: Mapped[float | None] = mapped_column(Float, nullable=True)
     status: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    # v4 additions — were silently dropped before:
+    resident_deposit: Mapped[float | None] = mapped_column(Float, nullable=True)
+    other_deposit:    Mapped[float | None] = mapped_column(Float, nullable=True)
+    move_out_date:    Mapped[date | None] = mapped_column(Date, nullable=True)
 
     property: Mapped[Property] = relationship(back_populates="leases")
 

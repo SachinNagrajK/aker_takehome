@@ -61,6 +61,9 @@ class ChatState(TypedDict, total=False):
     # --- resolved scope ---
     scope: dict[str, Any]
     property_name: str | None
+    # Time-scope dimension (v5). Mirrors `scope` but for "as of which month":
+    #   {kind: "latest"|"specific"|"missing"|"any", month: "2025-04-01"|None, label: str|None}
+    time_scope: dict[str, Any]
 
     # --- loop control ---
     turn_count: int             # number of agent turns taken

@@ -228,11 +228,11 @@ def _build_tools(scope: ScopeDecision):
         return primary_code
 
     @tool
-    def get_property_summary(property_code: str | None = None) -> dict:
-        """High-level KPIs (unit count, occupancy %, avg rent, total rent roll) for the LATEST monthly snapshot. In compare mode pass `property_code` to pick which property in scope; otherwise defaults to the primary."""
+    def get_property_summary(property_code: str | None = None, snapshot_month: str | None = None) -> dict:
+        """High-level KPIs (unit count, occupancy %, avg rent, total rent roll). Pass `snapshot_month` as YYYY-MM-DD for a specific monthly snapshot; omit for latest. In compare mode pass `property_code` to pick which property."""
         c = _pick_code(property_code)
         if isinstance(c, dict): return c
-        return SQL_TOOLS["get_property_summary"]["fn"](c)
+        return SQL_TOOLS["get_property_summary"]["fn"](c, snapshot_month=snapshot_month)
 
     @tool
     def get_unit_mix(property_code: str | None = None) -> dict:
@@ -265,11 +265,25 @@ def _build_tools(scope: ScopeDecision):
         )
 
     @tool
-    def get_top_balances(n: int = 10, property_code: str | None = None) -> dict:
-        """Top N leases by outstanding balance (most owed first). Default n=10. In compare mode pass `property_code` to pick which property."""
+    def get_top_balances(n: int = 10, snapshot_month: str | None = None, property_code: str | None = None) -> dict:
+        """Top N leases by outstanding balance (most owed first). Default n=10. Pass `snapshot_month` as YYYY-MM-DD for a specific snapshot; omit for latest. In compare mode pass `property_code`."""
         c = _pick_code(property_code)
         if isinstance(c, dict): return c
-        return SQL_TOOLS["get_top_balances"]["fn"](c, n=n)
+        return SQL_TOOLS["get_top_balances"]["fn"](c, n=n, snapshot_month=snapshot_month)
+
+    @tool
+    def get_lease_deposits(n: int = 50, snapshot_month: str | None = None, property_code: str | None = None) -> dict:
+        """Resident Deposit + Other Deposit per lease + aggregate sums/averages. Pass `snapshot_month` as YYYY-MM-DD for a specific snapshot; omit for latest. In compare mode pass `property_code`."""
+        c = _pick_code(property_code)
+        if isinstance(c, dict): return c
+        return SQL_TOOLS["get_lease_deposits"]["fn"](c, n=n, snapshot_month=snapshot_month)
+
+    @tool
+    def get_move_outs(since: str | None = None, until: str | None = None, property_code: str | None = None) -> dict:
+        """Leases with a Move Out date set, optionally filtered by date range (YYYY-MM-DD). Use for 'who is moving out this quarter?' or 'show move-outs since 2026-01-01'. In compare mode pass `property_code`."""
+        c = _pick_code(property_code)
+        if isinstance(c, dict): return c
+        return SQL_TOOLS["get_move_outs"]["fn"](c, since=since, until=until)
 
     @tool
     def get_unit_charges(unit_number: str, snapshot_month: str | None = None, property_code: str | None = None) -> dict:
@@ -398,9 +412,9 @@ def _build_tools(scope: ScopeDecision):
 
     tool_list = [
         get_property_summary, get_unit_mix, get_occupancy, get_rent_trend,
-        get_expiring_leases, get_top_balances, get_unit_charges,
-        compare_units, compare_properties, list_units, execute_scoped_sql,
-        search_property_pages, render_chart,
+        get_expiring_leases, get_top_balances, get_lease_deposits, get_move_outs,
+        get_unit_charges, compare_units, compare_properties, list_units,
+        execute_scoped_sql, search_property_pages, render_chart,
     ]
     return tool_list, {t.name: t for t in tool_list}
 
@@ -441,9 +455,10 @@ def _scope_summary(scope: dict) -> str:
 
 
 def _build_system_prompt(state: ChatState) -> str:
-    """One prompt, built once per request from scope + property_name."""
+    """One prompt, built once per request from scope + property_name + time_scope."""
     scope = state.get("scope") or {}
     scope_summary = _scope_summary(scope)
+    time_scope = state.get("time_scope") or {}
 
     base = (
         "You are a property-management AI analyst. You answer using the "
@@ -466,6 +481,35 @@ def _build_system_prompt(state: ChatState) -> str:
             f"  - For a single aggregate metric across all properties, use compare_properties.\n"
         )
 
+    # Time-scope: the user already told us (or was asked) "as of which month".
+    tk = (time_scope or {}).get("kind")
+    tm = (time_scope or {}).get("month")
+    tl = (time_scope or {}).get("label")
+    if tk == "specific" and tm:
+        base += (
+            f"\nTime scope: {tl} (snapshot_month='{tm}').\n"
+            f"  - Pass snapshot_month='{tm}' to EVERY tool call that accepts it "
+            f"(get_property_summary, get_top_balances, get_lease_deposits, "
+            f"get_occupancy, get_unit_charges, get_rent_trend, compare_properties).\n"
+            f"  - For tools without a snapshot_month arg (list_units, compare_units, "
+            f"get_unit_mix, get_expiring_leases, get_move_outs), use "
+            f"execute_scoped_sql against rent_snapshots with snapshot_month='{tm}'.\n"
+            f"  - Always state the snapshot month explicitly in your reply.\n"
+        )
+    elif tk == "latest":
+        base += (
+            "\nTime scope: LATEST snapshot.\n"
+            "  - Default tool behaviour returns the latest snapshot — no need "
+            "to pass snapshot_month.\n"
+            "  - Always say 'as of the latest snapshot' (or the actual month name "
+            "if a tool returns one) in your reply.\n"
+        )
+    elif tk == "any":
+        base += (
+            "\nTime scope: not applicable (this question doesn't depend on a "
+            "specific month — e.g. amenities, photos, property metadata).\n"
+        )
+
     base += (
         "\nTool selection guide (use the MOST specific):\n"
         "  - Specific unit fees / charges ('parking for A103')      → get_unit_charges\n"
@@ -476,6 +520,8 @@ def _build_system_prompt(state: ChatState) -> str:
         "  - Monthly trend / over the year                           → get_rent_trend\n"
         "  - Expiring leases                                         → get_expiring_leases\n"
         "  - High balances / delinquent                              → get_top_balances\n"
+        "  - Deposits (resident / other) — sum, avg, largest         → get_lease_deposits\n"
+        "  - Move-outs — who's leaving, when                         → get_move_outs\n"
         "  - Filtered unit list (multi-condition)                    → list_units\n"
         "  - NOVEL queries no curated tool covers                    → execute_scoped_sql\n"
         "  - Amenities / floor plans / pet policy / marketing copy   → search_property_pages\n"
@@ -526,6 +572,17 @@ def _build_system_prompt(state: ChatState) -> str:
         "  - If a unit, month, or property the user named doesn't exist in "
         "the data, still answer with what IS available and call out what's "
         "missing — don't silently drop the question.\n"
+        "\nSnapshot-month transparency:\n"
+        "  - The rent-roll holds 12 monthly snapshots per property. Charges, "
+        "rent, and balances all CHANGE month-to-month.\n"
+        "  - Every numeric answer derived from get_unit_charges, "
+        "get_property_summary, list_units, etc. MUST state the snapshot month "
+        "it covers (e.g. \"As of the December 2025 snapshot, unit A103 paid "
+        "$15 for trash\").\n"
+        "  - When a user asks 'how much for X?' without specifying a month, "
+        "answer with the LATEST snapshot's value AND name it. Offer the historical "
+        "trend if useful (a brief 'this fee was $25 earlier in the year, dropped to "
+        "$15 in August').\n"
         "\nFinish: stop calling tools and reply with a brief natural-language summary "
         "once you have enough data AND have rendered any charts the user asked for."
     )
@@ -630,13 +687,22 @@ def extract_scope(state: ChatState) -> dict[str, Any]:
             out["property_name"] = name
         except UnknownPropertyError:
             out["scope"] = {**decision.to_dict(), "kind": "missing"}
+
+    # v5: also classify the time-scope of the question.
+    from ..guardrails.scope import extract_time_intent
+    out["time_scope"] = extract_time_intent(state.get("user_message", ""))
     return out
 
 
 def scope_router(state: ChatState) -> str:
+    """Route after extract_scope. Property scope is the first gate; time
+    scope is the second. Either missing → clarify."""
     kind = (state.get("scope") or {}).get("kind", "missing")
     if kind in {"conflict", "missing"}:
         return "clarify"
+    time_kind = (state.get("time_scope") or {}).get("kind", "any")
+    if time_kind == "missing":
+        return "clarify_time"
     return "enter_turn"
 
 
@@ -716,6 +782,61 @@ def clarify(state: ChatState) -> dict[str, Any]:
 
     from ..guardrails.scope import _all_property_codes
     return {"scope": ScopeDecision(kind="missing", available=_all_property_codes()).to_dict()}
+
+
+# ---------------------------------------------------------------------------
+# 2b. clarify_time — second interrupt for missing month
+# ---------------------------------------------------------------------------
+
+def clarify_time(state: ChatState) -> dict[str, Any]:
+    """Ask the user which snapshot month they meant. Fires only when the
+    question is time-sensitive AND no month / "latest" intent was given."""
+    from ..guardrails.scope import available_snapshot_months, extract_time_intent
+
+    months = available_snapshot_months()  # newest first, ISO strings
+    # Friendly labels for the buttons (e.g. "December 2025").
+    from datetime import date as _date
+    def label(iso: str) -> str:
+        y, m, _ = iso.split("-")
+        return _date(int(y), int(m), 1).strftime("%B %Y")
+
+    options = ["Latest"] + [label(m) for m in months]
+
+    question = (
+        "Which month should I use for this answer? "
+        "Rent, charges, occupancy and balances all change month-to-month — "
+        "pick a specific snapshot, or 'Latest' for the most recent one."
+    )
+
+    user_choice = interrupt({
+        "question": question,
+        "options": options,
+        "scope_kind": "time",
+    })
+
+    raw = user_choice if isinstance(user_choice, str) else (
+        user_choice[0] if isinstance(user_choice, list) and user_choice else ""
+    )
+    raw_l = (raw or "").strip().lower()
+
+    # Latest → mark as latest.
+    if raw_l in {"latest", "current", "newest", "most recent", "recent"}:
+        return {"time_scope": {"kind": "latest", "month": None, "label": "latest snapshot"}}
+
+    # Try to parse a specific month from the reply.
+    parsed = extract_time_intent(raw)
+    if parsed["kind"] == "specific":
+        return {"time_scope": parsed}
+    if parsed["kind"] == "latest":
+        return {"time_scope": parsed}
+
+    # Last-ditch: match raw against the available labels.
+    for iso in months:
+        if label(iso).lower() == raw_l or iso == raw_l:
+            return {"time_scope": {"kind": "specific", "month": iso, "label": label(iso)}}
+
+    # Unparseable reply → re-loop the interrupt.
+    return {"time_scope": {"kind": "missing", "month": None, "label": None}}
 
 
 # ---------------------------------------------------------------------------

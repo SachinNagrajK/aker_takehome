@@ -106,9 +106,13 @@ HARD_STOP_PREFIXES = ("Summary Groups", "Totals:", "Summary of Charges")
 #   RENT      - residential
 #   RENTAFF   - affordable housing
 #   RENTRETL  - retail / commercial
-# Sum across these per unit block. Concessions live in CONCESSION_CODES.
+# Sum across these per unit block.
 RENT_CHARGE_CODES = {"RENT", "RENTAFF", "RENTRETL"}
-CONCESSION_CODES  = {"CONRENT", "CONRETL"}
+
+# Concessions all begin with the "CON" prefix in the source data:
+#   CONRENT  CONRETL  CONPARK  CONEMP  CONGAR  CONSTOR  CONAMEN
+# A code is treated as a concession when it starts with this prefix.
+CONCESSION_PREFIX = "CON"
 
 
 @dataclass
@@ -254,6 +258,11 @@ def parse_rent_roll_file(path: Path) -> ParsedFile:
                 "lease_end": _to_date(row.iat[COL_LEASE_EXP]),
                 "move_out": _to_date(row.iat[COL_MOVE_OUT]),
                 "balance": _to_float(row.iat[COL_BALANCE]),
+                # v4: deposits captured on the unit's identity row (cols 8, 9).
+                # 31,055 rows in the corpus had a non-zero Resident Deposit;
+                # 73 rows had a non-zero Other Deposit. Previously discarded.
+                "resident_deposit": _to_float(row.iat[COL_RESIDENT_DEP]),
+                "other_deposit":    _to_float(row.iat[COL_OTHER_DEP]),
                 "monthly_rent": None,
                 "charges": {},        # per-code totals (summary)
                 "charge_lines": [],   # ordered per-line items (granular truth)
@@ -282,7 +291,9 @@ def parse_rent_roll_file(path: Path) -> ParsedFile:
     # writer can persist them in the new rent_charge_lines table.
     for u in result.units:
         charges = u["charges"]
-        concessions = sum(v for k, v in charges.items() if k in CONCESSION_CODES)
+        # All concession codes share the CON prefix (CONRENT, CONPARK, CONEMP,
+        # CONGAR, CONSTOR, CONAMEN, CONRETL). Sum across them all.
+        concessions = sum(v for k, v in charges.items() if k.startswith(CONCESSION_PREFIX))
         effective_rent = (
             (u["monthly_rent"] + concessions) if u["monthly_rent"] is not None else None
         )
@@ -290,7 +301,7 @@ def parse_rent_roll_file(path: Path) -> ParsedFile:
             "unit_number": u["unit_number"],
             "monthly_rent": u["monthly_rent"],
             "occupied": u["occupied"],
-            "charge_lines": u["charge_lines"],  # NEW: per-line items in source order
+            "charge_lines": u["charge_lines"],  # per-line items in source order
             "raw_row": {
                 "charges": charges,
                 "market_rent": u["market_rent"],
@@ -298,6 +309,8 @@ def parse_rent_roll_file(path: Path) -> ParsedFile:
                 "balance": u["balance"],
                 "effective_rent": effective_rent,   # rent net of concessions
                 "concessions": concessions if concessions else None,
+                "resident_deposit": u["resident_deposit"],
+                "other_deposit":    u["other_deposit"],
                 "move_in": u["move_in"].isoformat() if u["move_in"] else None,
                 "lease_end": u["lease_end"].isoformat() if u["lease_end"] else None,
                 "move_out": u["move_out"].isoformat() if u["move_out"] else None,
@@ -402,6 +415,9 @@ def _refresh_units_and_leases(session, code: str, latest_units: list[dict]) -> N
             "market_rent": u["market_rent"],
         })
         if u["occupied"]:
+            # `status` distinguishes a tenant who has filed notice from a
+            # standard current resident: move_out set ⇒ on notice.
+            status = "notice" if u["move_out"] else "current"
             lease_rows.append({
                 "property_code": code,
                 "unit_number": u["unit_number"],
@@ -410,7 +426,10 @@ def _refresh_units_and_leases(session, code: str, latest_units: list[dict]) -> N
                 "lease_end": u["lease_end"],
                 "monthly_rent": u["monthly_rent"],
                 "balance": u["balance"],
-                "status": "current",
+                "status": status,
+                "resident_deposit": u["resident_deposit"],
+                "other_deposit":    u["other_deposit"],
+                "move_out_date":    u["move_out"],
             })
     if unit_rows:
         session.bulk_insert_mappings(models.Unit, unit_rows)
