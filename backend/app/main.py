@@ -40,10 +40,17 @@ settings = get_settings()
 
 app = FastAPI(title="Property-Specific AI Assistant", version="0.1.0")
 
+# CORS — comma-separated list of origins via CORS_ORIGINS env var. Default
+# is `*` for local dev. In production set it to the Vercel domain, e.g.
+# `https://aker-property-ai.vercel.app`.
+import os as _os
+_cors_origins_raw = _os.getenv("CORS_ORIGINS", "*").strip()
+_cors_origins = [o.strip() for o in _cors_origins_raw.split(",") if o.strip()] or ["*"]
+_allow_credentials = _cors_origins != ["*"]  # spec forbids credentials with wildcard
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
+    allow_origins=_cors_origins,
+    allow_credentials=_allow_credentials,
     allow_methods=["*"],
     allow_headers=["*"],
 )

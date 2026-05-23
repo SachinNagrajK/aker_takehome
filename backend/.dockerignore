@@ -1,0 +1,33 @@
+# Keep the Docker context small — exclude everything we don't need at runtime.
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+*.egg-info/
+
+# Local data + caches that should never ship in the image
+doc_store/
+chroma_db/
+chroma_db_v2/
+hf_cache/
+*.sqlite3
+
+# Logs + IDE
+*.log
+.idea/
+.vscode/
+
+# Local-only secrets
+.env
+.env.local
+*.local
+
+# Tests / dev scripts not needed in prod
+tests/
+ingest_all_aker.py
+wipe_and_reingest.py
+validate_ingestion.py
+upload_doc_store_to_supabase.py
