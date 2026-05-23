@@ -450,13 +450,24 @@ def _tools_for(state: ChatState):
 # Prompts
 # ---------------------------------------------------------------------------
 
-def _scope_summary(scope: dict) -> str:
+def _scope_summary(scope: dict, time_scope: dict | None = None) -> str:
     kind = scope.get("kind")
     if kind == "single":
-        return f"single property {scope.get('code')!r}"
-    if kind == "compare":
-        return f"comparison across properties {scope.get('codes')}"
-    return f"unresolved ({kind})"
+        base = f"single property {scope.get('code')!r}"
+    elif kind == "compare":
+        base = f"comparison across properties {scope.get('codes')}"
+    else:
+        base = f"unresolved ({kind})"
+    # Include time scope so drift detection in enter_turn fires when the
+    # user picks a different month on a subsequent turn.
+    if time_scope:
+        tk = time_scope.get("kind")
+        tm = time_scope.get("month")
+        if tk == "specific" and tm:
+            base += f"; time=snapshot_month={tm}"
+        elif tk == "latest":
+            base += "; time=latest"
+    return base
 
 
 def _build_system_prompt(state: ChatState) -> str:
@@ -895,7 +906,9 @@ def enter_turn(state: ChatState) -> dict[str, Any]:
     - Resets per-turn state regardless.
     """
     existing = state.get("messages") or []
-    current_summary = _scope_summary(state.get("scope") or {})
+    current_summary = _scope_summary(
+        state.get("scope") or {}, state.get("time_scope") or {}
+    )
     last_summary = _last_scope_summary_in(existing)
 
     new_msgs: list = []
@@ -907,14 +920,32 @@ def enter_turn(state: ChatState) -> dict[str, Any]:
         )
         new_msgs.append(SystemMessage(content=sys_text))
     elif last_summary != current_summary:
-        # Scope drifted between turns — append a refresh note rather than a
-        # full re-prompt. Positioned at the end so it's the most-recent
-        # instruction the LLM sees.
-        new_msgs.append(SystemMessage(
-            content=f"{_SCOPE_MARKER} {current_summary}\n\n"
-                    f"Scope updated for this turn: {current_summary}. "
-                    "Use ONLY this scope when answering the next user message."
-        ))
+        # Property OR time scope drifted between turns — append a refresh
+        # note rather than a full re-prompt. Positioned at the end so it's
+        # the most-recent instruction the LLM sees.
+        refresh_lines = [
+            f"{_SCOPE_MARKER} {current_summary}",
+            "",
+            f"Scope updated for this turn: {current_summary}.",
+            "Use ONLY this scope when answering the next user message.",
+        ]
+        # Re-emphasise the time scope so the LLM doesn't carry over the
+        # previous turn's month or hallucinate a different one.
+        tk = (state.get("time_scope") or {}).get("kind")
+        tm = (state.get("time_scope") or {}).get("month")
+        tl = (state.get("time_scope") or {}).get("label")
+        if tk == "specific" and tm:
+            refresh_lines.append(
+                f"TIME SCOPE: {tl} (snapshot_month='{tm}'). You MUST call a tool "
+                f"with snapshot_month='{tm}' to answer — do not infer the answer "
+                f"from prior conversation history or use a different month."
+            )
+        elif tk == "latest":
+            refresh_lines.append(
+                "TIME SCOPE: LATEST snapshot. Call a tool with no snapshot_month "
+                "argument (tools default to latest)."
+            )
+        new_msgs.append(SystemMessage(content="\n".join(refresh_lines)))
     new_msgs.append(HumanMessage(content=state["user_message"]))
 
     return {
