@@ -98,6 +98,55 @@ _SECTION_HINTS = {
 }
 _BOOST_DISTANCE = 0.25  # subtracted from candidate distance on hint match
 
+# docling assigns a small handful of fallback captions when it can't
+# extract real alt-text. Treat these as "no caption" so we substitute a
+# section-derived label instead of misleading the user.
+_GENERIC_CAPTIONS: frozenset[str] = frozenset({
+    "",
+    "exterior of building",
+    "building",
+    "image",
+    "photo",
+    "picture",
+    "untitled",
+})
+
+
+def _section_label(meta: dict) -> str:
+    """Pick a human-readable label for an image chunk's source section.
+
+    Prefers the last URL path segment (most stable across a site), with
+    docling's section_path as backup. Falls back to "Property photo".
+    """
+    from urllib.parse import urlparse
+    url = meta.get("url") or ""
+    path = urlparse(url).path.strip("/")
+    if path:
+        last = path.split("/")[-1] or path.split("/")[0]
+        pretty = last.replace("-", " ").replace("_", " ").strip().title()
+        if pretty:
+            return pretty
+    section = (meta.get("section_path") or "").strip()
+    if section:
+        first = section.split(">")[0].strip()
+        if first:
+            return first
+    return "Property photo"
+
+
+def _display_caption(meta: dict) -> str:
+    """Caption to show under an image.
+
+    If docling extracted a real (non-generic) caption, use it verbatim.
+    Otherwise return a section label that at least tells the user which
+    page the photo came from. Callers append a counter when several
+    images would otherwise share the same label.
+    """
+    cap = (meta.get("caption") or "").strip()
+    if cap and cap.lower() not in _GENERIC_CAPTIONS:
+        return cap
+    return _section_label(meta)
+
 
 def _hint_terms_for(query: str) -> list[str]:
     """Return URL substrings to boost based on keywords in `query`."""
@@ -224,7 +273,7 @@ def search_property_v2(
         seen_image_paths.add(path)
         images.append({
             "url": public_url(path),
-            "caption": meta.get("caption") or meta.get("section_path") or "",
+            "caption": _display_caption(meta),
             "source_url": meta.get("url"),
             "section_path": meta.get("section_path"),
             "distance": c["raw_dist"],
@@ -232,6 +281,18 @@ def search_property_v2(
         })
         if len(images) >= max_images:
             break
+
+    # If several images would share the same caption (this site labels
+    # every gallery photo identically), append a 1-indexed counter so the
+    # user can at least tell them apart visually.
+    from collections import Counter
+    caption_counts = Counter(im["caption"] for im in images)
+    seen_counter: dict[str, int] = {}
+    for im in images:
+        cap = im["caption"]
+        if caption_counts[cap] > 1:
+            seen_counter[cap] = seen_counter.get(cap, 0) + 1
+            im["caption"] = f"{cap} - photo {seen_counter[cap]}"
 
     seen: set[str] = set()
     sources: list[dict[str, str]] = []
