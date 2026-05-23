@@ -341,11 +341,16 @@ def _build_tools(scope: ScopeDecision):
         return SQL_TOOLS["execute_scoped_sql"]["fn"](scope_codes, sql)
 
     @tool
-    def search_property_pages(query: str, k: int = 4, property_code: str | None = None) -> dict:
-        """Semantic + image search over the active property's MARKETING WEBSITE chunks (amenities, floor plans, gallery, pet policy, etc). Returns text chunks AND a multimodal `images` list — relevant property photos are then surfaced as a gallery beneath your reply automatically. Use for qualitative questions and any user request to 'see/show/display' something visual. In compare mode pass `property_code` to pick which property."""
+    def search_property_pages(
+        query: str,
+        k: int = 4,
+        max_images: int = 3,
+        property_code: str | None = None,
+    ) -> dict:
+        """Semantic + image search over the active property's MARKETING WEBSITE chunks (amenities, floor plans, gallery, pet policy, etc). Returns text chunks AND a multimodal `images` list — relevant property photos are then surfaced as a gallery beneath your reply automatically. Use for qualitative questions and any user request to 'see/show/display' something visual. `max_images` caps the gallery size (default 3, hard ceiling 25) — set HIGH (15-25) when the user asks 'show me ALL the images / every photo / show them all'. In compare mode pass `property_code` to pick which property."""
         c = _pick_code(property_code)
         if isinstance(c, dict): return c
-        return search_property_active(c, query, k=k)
+        return search_property_active(c, query, k=k, max_images=max_images)
 
     @tool
     def render_chart(
@@ -558,6 +563,19 @@ def _build_system_prompt(state: ChatState) -> str:
         "with a query that captures what they want to see (e.g. 'pool', 'kitchen', "
         "'river view'). This applies on FOLLOW-UP turns too — re-call the tool, don't "
         "assume images from a previous turn are still on screen.\n"
+        "  - **Honesty about captions:** describe each surfaced image USING ITS ACTUAL "
+        "CAPTION from the tool's `images` list. Do NOT relabel images to fit the "
+        "user's question. If the user asked for 'floor plans' but the returned captions "
+        "are lifestyle photos (no caption mentions 'floor plan' / 'layout' / 'diagram' / "
+        "'bedroom plan'), TELL THE USER: 'the marketing site doesn't host static "
+        "floor-plan diagrams — here's what IS available from the /floorplans/ page'. "
+        "Same for any specific request that's not actually present.\n"
+        "  - **'All / every / show them all' intent:** when the user says 'show me ALL "
+        "the images / every photo / show them all', pass max_images=20 (or 25) to "
+        "search_property_pages so the gallery isn't capped at 3.\n"
+        "  - **Different question, fresh call:** if the user asks for floor plans after "
+        "asking for amenities, do NOT regurgitate the previous answer — call "
+        "search_property_pages again with the new query so the gallery refreshes.\n"
         "  - NEVER say \"I can't display images\". Calling search_property_pages IS how "
         "images get shown. NEVER embed `![](...)` markdown image links — they will be "
         "stripped from your reply. Talk about the images briefly, then let the gallery "

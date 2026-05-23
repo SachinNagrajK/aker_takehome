@@ -154,8 +154,9 @@ def build_context_block(chunks: list[dict[str, Any]]) -> str:
 # we ALSO boost candidates whose source URL or section_path matches a
 # page-section keyword in the user's query (e.g. "gym pool" → /amenities/).
 _DISTANCE_THRESHOLD_IMAGE = 1.05
-_MAX_IMAGES = 3
-_IMAGE_QUERY_K = 12  # over-fetch so the boost has room to re-rank
+_DEFAULT_MAX_IMAGES = 3
+_HARD_CAP_MAX_IMAGES = 25       # absolute ceiling when caller asks for "all"
+_IMAGE_QUERY_K_MULT  = 4        # over-fetch this many * max so boost has room
 
 # Map query keywords → URL substrings that suggest a relevant page section.
 # When the query contains any of the keys, images whose URL or section_path
@@ -204,6 +205,7 @@ def search_property_v2(
     property_code: str,
     query: str,
     k: int = 8,
+    max_images: int = _DEFAULT_MAX_IMAGES,
 ) -> dict[str, Any]:
     """Query the v2 collection. Returns text chunks + a separate `images` list.
 
@@ -217,6 +219,10 @@ def search_property_v2(
             "chunks": [], "images": [], "sources": [],
         }
     k = max(1, min(int(k or DEFAULT_K), MAX_K))
+    # Clamp & default the image cap. Over-fetch image candidates 4x so the
+    # URL-keyword boost has room to re-rank before truncating.
+    max_images = max(1, min(int(max_images or _DEFAULT_MAX_IMAGES), _HARD_CAP_MAX_IMAGES))
+    image_query_k = min(max_images * _IMAGE_QUERY_K_MULT, 60)
 
     from ..ingestion.v2.doc_store import public_url
     from ..ingestion.v2.embedder import JinaV4Embedder
@@ -266,7 +272,7 @@ def search_property_v2(
     try:
         img_res = coll.query(
             query_embeddings=[qvec],
-            n_results=_IMAGE_QUERY_K,
+            n_results=image_query_k,
             where={
                 "$and": [
                     {"property_code": code},
@@ -333,7 +339,7 @@ def search_property_v2(
             "distance": c["raw_dist"],
             "boosted": c["boosted"],
         })
-        if len(images) >= _MAX_IMAGES:
+        if len(images) >= max_images:
             break
 
     # Dedupe sources by page URL while preserving order.
@@ -382,12 +388,17 @@ def build_context_block_v2(chunks: list[dict[str, Any]]) -> str:
     return "\n\n".join(parts)
 
 
-def search_property_active(property_code: str, query: str, k: int = DEFAULT_K) -> dict[str, Any]:
+def search_property_active(
+    property_code: str,
+    query: str,
+    k: int = DEFAULT_K,
+    max_images: int = _DEFAULT_MAX_IMAGES,
+) -> dict[str, Any]:
     """Dispatch to v1 or v2 based on RAG_VERSION setting."""
     version = (get_settings().rag_version or "v2").lower()
     if version == "v1":
         return search_property(property_code, query, k=k)
-    return search_property_v2(property_code, query, k=k)
+    return search_property_v2(property_code, query, k=k, max_images=max_images)
 
 
 def has_content(property_code: str) -> bool:

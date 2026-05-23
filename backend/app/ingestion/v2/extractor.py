@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import io
 import logging
+import re
 from dataclasses import dataclass, field
 from typing import Any, Iterable
 from urllib.parse import urljoin, urlparse
@@ -207,11 +208,21 @@ def extract(url: str) -> list[Block]:
 # BeautifulSoup image fallback
 # ---------------------------------------------------------------------------
 
-_IMG_MIN_BYTES = 8 * 1024     # skip tracking pixels / tiny icons
-_IMG_MAX_BYTES = 6 * 1024 * 1024
-_IMG_MAX_PER_PAGE = 25
-_SKIP_EXTS = {"svg", "ico"}
-_SKIP_HINTS = ("logo", "icon", "favicon", "sprite", "pixel", "tracking")
+_IMG_MIN_BYTES = 4 * 1024     # smaller floor-plan SVGs can be under 8 KB
+_IMG_MAX_BYTES = 8 * 1024 * 1024
+_IMG_MAX_PER_PAGE = 60        # sub-page recursion can produce 20-30+ per index
+_IMG_MAX_TOTAL   = 80         # absolute cap per ingest call (index + all subpages)
+# We DO want SVGs now — many marketing sites ship floor-plan diagrams as SVG
+# (e.g. /assets/images/A02_.svg on Statamic sites). `ico` is still excluded.
+_SKIP_EXTS = {"ico"}
+_SKIP_HINTS = ("logo", "favicon", "sprite", "pixel", "tracking", "icon-")
+
+# When the URL path looks like a section index (e.g. /floorplans/), we
+# follow same-host sub-page links one level deep so we can capture per-unit
+# floor-plan diagrams that live on /floorplans/a01/, /floorplans/b02/, etc.
+_DISCOVERY_PATH_HINTS = ("floorplan", "floor-plan", "gallery", "amenit")
+# Limit how many sub-pages we follow per index to keep ingest bounded.
+_DISCOVERY_MAX_SUBPAGES = 20
 
 
 def _candidate_src(img_tag) -> str | None:
@@ -250,12 +261,81 @@ def _nearest_caption(img_tag) -> str:
     return ""
 
 
-def _scrape_html_images(url: str) -> list[Block]:
+_IMG_URL_RE = re.compile(
+    r"""(https?://[^\s"'<>\\]+\.(?:jpe?g|png|webp|gif|svg))""",
+    re.IGNORECASE,
+)
+
+
+def _harvest_image_urls_from_scripts(html_text: str, base_url: str) -> set[str]:
+    """Many marketing sites embed image URLs inside <script> JSON blobs with
+    backslash-escaped slashes (`https:\\/\\/.../A02_.svg`). bs4 won't surface
+    those via <img> tags. Decode the escapes and regex out every absolute
+    image URL we find."""
+    text = html_text.replace("\\/", "/").replace("\\u002F", "/")
+    out: set[str] = set()
+    for m in _IMG_URL_RE.finditer(text):
+        u = m.group(1)
+        # Same-host or http-absolute only — sanity check
+        try:
+            host = urlparse(u).netloc
+            base_host = urlparse(base_url).netloc
+            if host and (host == base_host or host.endswith("." + base_host)):
+                out.add(u)
+        except Exception:  # noqa: BLE001
+            continue
+    return out
+
+
+def _discover_subpages(html: str, base_url: str) -> list[str]:
+    """Return same-host child URLs found in <a href>. Used when the base
+    URL is a section index (e.g. /floorplans/) — we recurse one level to
+    pick up per-unit pages that hold the actual diagrams."""
+    base_path = urlparse(base_url).path.rstrip("/")
+    if not any(h in base_path.lower() for h in _DISCOVERY_PATH_HINTS):
+        return []
     try:
-        html = _fetch(url, timeout=20)
+        from bs4 import BeautifulSoup
+        soup = BeautifulSoup(html, "lxml")
+    except Exception:  # noqa: BLE001
+        return []
+
+    base_host = urlparse(base_url).netloc
+    seen: set[str] = set()
+    sub: list[str] = []
+    for a in soup.find_all("a", href=True):
+        href = a["href"]
+        abs_url = urljoin(base_url, href)
+        u = urlparse(abs_url)
+        if u.netloc != base_host:
+            continue
+        if not u.path.startswith(base_path + "/"):
+            continue
+        # Skip self / fragment anchors
+        if abs_url.rstrip("/") == base_url.rstrip("/"):
+            continue
+        # Strip query/fragments for dedup
+        canonical = f"{u.scheme}://{u.netloc}{u.path.rstrip('/')}/"
+        if canonical in seen:
+            continue
+        seen.add(canonical)
+        sub.append(canonical)
+        if len(sub) >= _DISCOVERY_MAX_SUBPAGES:
+            break
+    return sub
+
+
+def _scrape_html_images(url: str, _depth: int = 0, _seen_urls: set[str] | None = None) -> list[Block]:
+    if _seen_urls is None:
+        _seen_urls = set()
+
+    try:
+        raw_html_bytes = _fetch(url, timeout=20)
+        html = raw_html_bytes.decode("utf-8", errors="ignore")
     except Exception as e:  # noqa: BLE001
         log.debug("image fallback fetch failed for %s: %s", url, e)
         return []
+
     try:
         from bs4 import BeautifulSoup
         soup = BeautifulSoup(html, "lxml")
@@ -263,8 +343,10 @@ def _scrape_html_images(url: str) -> list[Block]:
         log.warning("bs4 parse failed: %s", e)
         return []
 
+    candidate_urls: list[tuple[str, str]] = []  # (abs_url, caption)
     seen: set[str] = set()
-    out: list[Block] = []
+
+    # 1) <img> tags via bs4 (with alt/caption resolution)
     for img in soup.find_all("img"):
         src = _candidate_src(img)
         if not src:
@@ -273,6 +355,17 @@ def _scrape_html_images(url: str) -> list[Block]:
         if abs_url in seen:
             continue
         seen.add(abs_url)
+        candidate_urls.append((abs_url, _nearest_caption(img)))
+
+    # 2) Script-embedded image URLs (covers JSON-escaped floor plan SVGs etc.)
+    for abs_url in _harvest_image_urls_from_scripts(html, url):
+        if abs_url in seen:
+            continue
+        seen.add(abs_url)
+        candidate_urls.append((abs_url, ""))
+
+    out: list[Block] = []
+    for abs_url, caption in candidate_urls:
         path_lower = urlparse(abs_url).path.lower()
         ext = path_lower.rsplit(".", 1)[-1] if "." in path_lower else ""
         if ext in _SKIP_EXTS:
@@ -287,7 +380,6 @@ def _scrape_html_images(url: str) -> list[Block]:
         size = len(raw)
         if size < _IMG_MIN_BYTES or size > _IMG_MAX_BYTES:
             continue
-        caption = _nearest_caption(img)
         out.append(Block(
             type="image",
             content=caption,
@@ -298,4 +390,16 @@ def _scrape_html_images(url: str) -> list[Block]:
         ))
         if len(out) >= _IMG_MAX_PER_PAGE:
             break
+
+    # 3) Sub-page discovery (one level deep, only on section-index URLs).
+    if _depth == 0:
+        for sub_url in _discover_subpages(html, url):
+            if sub_url in _seen_urls:
+                continue
+            _seen_urls.add(sub_url)
+            sub_blocks = _scrape_html_images(sub_url, _depth=1, _seen_urls=_seen_urls)
+            out.extend(sub_blocks)
+            if len(out) >= _IMG_MAX_TOTAL:
+                break
+
     return out

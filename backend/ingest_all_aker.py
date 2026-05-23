@@ -7,6 +7,13 @@ logging.basicConfig(level=logging.WARNING, format='%(asctime)s %(levelname)s %(m
 from app.ingestion.v2.pipeline import ingest_urls
 
 SEEDS: dict[str, tuple[str, list[str]]] = {
+    "134r": ("Fifty-Five Riverwalk Place", [
+        "https://55riverwalkplace.com/",
+        "https://55riverwalkplace.com/amenities/",
+        "https://55riverwalkplace.com/floorplans/",
+        "https://55riverwalkplace.com/neighborhood/",
+        "https://55riverwalkplace.com/gallery/",
+    ]),
     "138r": ("Everbend Tarrytown", [
         "https://everbendny.com/",
         "https://everbendny.com/amenities/",
