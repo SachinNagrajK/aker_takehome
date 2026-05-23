@@ -35,13 +35,10 @@ def main() -> None:
 
     print("[1/3] Dropping rent-roll tables ...")
     with engine.begin() as conn:
-        # MySQL refuses to drop FK parents while children exist; disabling FK
-        # checks for the duration of the wipe is simpler than dependency math.
-        conn.execute(text("SET FOREIGN_KEY_CHECKS = 0"))
+        # CASCADE handles FK dependencies in one shot — order-independent.
         for tbl in DROP_ORDER:
-            conn.execute(text(f"DROP TABLE IF EXISTS `{tbl}`"))
+            conn.execute(text(f'DROP TABLE IF EXISTS "{tbl}" CASCADE'))
             print(f"    dropped {tbl}")
-        conn.execute(text("SET FOREIGN_KEY_CHECKS = 1"))
 
     print("[2/3] Recreating schema (with v4 columns: resident_deposit, "
           "other_deposit, move_out_date on leases) ...")

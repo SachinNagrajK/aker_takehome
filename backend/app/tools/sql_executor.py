@@ -1,12 +1,12 @@
 """LLM-written SQL backstop.
 
 `execute_scoped_sql` is the agent's escape hatch when no curated tool fits.
-It runs against a read-only MySQL user and goes through the sqlglot
+It runs against a read-only Postgres role and goes through the sqlglot
 validator first. Two defenses at two layers:
 
   Layer 1 (sqlglot):    AST checks — SELECT only, table allowlist,
                         scope filter required, no scope widening.
-  Layer 2 (MySQL):      `property_reader` user has SELECT-only on the 5
+  Layer 2 (Postgres):   `property_reader` role has SELECT-only on the 5
                         whitelisted tables. Even if Layer 1 is bypassed
                         the DB rejects writes.
 """

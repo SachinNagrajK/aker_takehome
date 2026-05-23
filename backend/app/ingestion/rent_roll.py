@@ -36,7 +36,7 @@ from typing import Iterable
 
 import pandas as pd
 from sqlalchemy import delete
-from sqlalchemy.dialects.mysql import insert as mysql_insert
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 # Allow `python -m app.ingestion.rent_roll` from backend/.
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
@@ -325,14 +325,17 @@ def parse_rent_roll_file(path: Path) -> ParsedFile:
 # ---------------------------------------------------------------------------
 
 def _upsert_property(session, code: str, name: str) -> None:
-    stmt = mysql_insert(models.Property).values(
+    stmt = pg_insert(models.Property).values(
         property_code=code,
         property_name=name,
         property_type=_classify_property_type(code),
     )
-    stmt = stmt.on_duplicate_key_update(
-        property_name=stmt.inserted.property_name,
-        property_type=stmt.inserted.property_type,
+    stmt = stmt.on_conflict_do_update(
+        index_elements=[models.Property.property_code],
+        set_={
+            "property_name": stmt.excluded.property_name,
+            "property_type": stmt.excluded.property_type,
+        },
     )
     session.execute(stmt)
 

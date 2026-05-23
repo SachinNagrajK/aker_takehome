@@ -6,8 +6,7 @@ python-dotenv==1.0.1
 
 # DB
 SQLAlchemy==2.0.35
-PyMySQL==1.1.1
-cryptography==43.0.1
+psycopg[binary]==3.2.3
 
 # Excel
 pandas==2.2.3

@@ -13,18 +13,33 @@ load_dotenv(_BACKEND_DIR / ".env")
 
 
 class Settings:
-    # DB
-    mysql_host: str = os.getenv("MYSQL_HOST", "localhost")
-    mysql_port: int = int(os.getenv("MYSQL_PORT", "3306"))
-    mysql_user: str = os.getenv("MYSQL_USER", "property_user")
-    mysql_password: str = os.getenv("MYSQL_PASSWORD", "property_pass")
-    mysql_db: str = os.getenv("MYSQL_DB", "property_ai")
+    # DB — Postgres (Supabase in prod, docker-compose locally).
+    # Canonical: full SQLAlchemy URL via DATABASE_URL / DATABASE_READER_URL.
+    # Fallback: build from PG_* parts for local docker-compose convenience.
+    database_url: str = (
+        os.getenv("DATABASE_URL")
+        or "postgresql+psycopg://{u}:{p}@{h}:{port}/{db}".format(
+            u=os.getenv("PG_USER", "property_user"),
+            p=os.getenv("PG_PASSWORD", "property_pass"),
+            h=os.getenv("PG_HOST", "localhost"),
+            port=os.getenv("PG_PORT", "5432"),
+            db=os.getenv("PG_DB", "property_ai"),
+        )
+    )
 
-    # Read-only DB user — used only by the LLM-written SQL executor.
-    # Lacks INSERT/UPDATE/DELETE/DDL privileges at the MySQL level even if
+    # Read-only role — used only by the LLM-written SQL executor.
+    # Lacks INSERT/UPDATE/DELETE/DDL privileges at the Postgres level even if
     # the sqlglot validator is bypassed.
-    mysql_reader_user: str = os.getenv("MYSQL_READER_USER", "property_reader")
-    mysql_reader_password: str = os.getenv("MYSQL_READER_PASSWORD", "reader_pass")
+    database_reader_url: str = (
+        os.getenv("DATABASE_READER_URL")
+        or "postgresql+psycopg://{u}:{p}@{h}:{port}/{db}".format(
+            u=os.getenv("PG_READER_USER", "property_reader"),
+            p=os.getenv("PG_READER_PASSWORD", "reader_pass"),
+            h=os.getenv("PG_HOST", "localhost"),
+            port=os.getenv("PG_PORT", "5432"),
+            db=os.getenv("PG_DB", "property_ai"),
+        )
+    )
 
     # LLM keys
     openai_api_key: str | None = os.getenv("OPENAI_API_KEY") or None
@@ -56,18 +71,12 @@ class Settings:
 
     @property
     def sqlalchemy_url(self) -> str:
-        return (
-            f"mysql+pymysql://{self.mysql_user}:{self.mysql_password}"
-            f"@{self.mysql_host}:{self.mysql_port}/{self.mysql_db}?charset=utf8mb4"
-        )
+        return self.database_url
 
     @property
     def sqlalchemy_reader_url(self) -> str:
         """Connection string for the read-only DB user."""
-        return (
-            f"mysql+pymysql://{self.mysql_reader_user}:{self.mysql_reader_password}"
-            f"@{self.mysql_host}:{self.mysql_port}/{self.mysql_db}?charset=utf8mb4"
-        )
+        return self.database_reader_url
 
 
 @lru_cache(maxsize=1)

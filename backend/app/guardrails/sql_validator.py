@@ -13,7 +13,8 @@ It enforces, in order:
   5. LIMIT added if absent (cap 500 rows).
 
 Defense-in-depth: even if this layer is fooled, the database connection runs
-as `MYSQL_READER_USER` which has SELECT-only on these five tables.
+as the `property_reader` Postgres role which has SELECT-only on these five
+tables.
 """
 from __future__ import annotations
 
@@ -157,7 +158,7 @@ def _ensure_scope_filter(
             select.set("where", exp.Where(this=in_expr))
         else:
             select.set("where", exp.Where(this=exp.And(this=where.this, expression=in_expr)))
-        injected.append(select.sql(dialect="mysql"))
+        injected.append(select.sql(dialect="postgres"))
     return injected
 
 
@@ -183,9 +184,9 @@ def validate_and_rewrite(
 
     allowed_codes = {c.strip().lower() for c in allowed_property_codes}
 
-    # Parse — sqlglot tolerates MySQL dialect.
+    # Parse with the Postgres dialect.
     try:
-        trees = sqlglot.parse(sql, dialect="mysql")
+        trees = sqlglot.parse(sql, dialect="postgres")
     except Exception as e:
         raise SqlValidationError(f"Failed to parse SQL: {e}") from e
     if len(trees) != 1:
@@ -206,7 +207,7 @@ def validate_and_rewrite(
     limit_added = _ensure_limit(tree)
 
     return ValidatedSql(
-        sql=tree.sql(dialect="mysql"),
+        sql=tree.sql(dialect="postgres"),
         referenced_tables=table_names,
         scope_codes=sorted(allowed_codes),
         auto_injected_filters=injected,

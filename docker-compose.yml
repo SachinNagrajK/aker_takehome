@@ -1,22 +1,24 @@
 services:
-  mysql:
-    image: mysql:8.0
-    container_name: property_ai_mysql
+  postgres:
+    image: postgres:16-alpine
+    container_name: property_ai_postgres
     restart: unless-stopped
     environment:
-      MYSQL_ROOT_PASSWORD: root
-      MYSQL_DATABASE: property_ai
-      MYSQL_USER: property_user
-      MYSQL_PASSWORD: property_pass
+      POSTGRES_DB: property_ai
+      POSTGRES_USER: property_user
+      POSTGRES_PASSWORD: property_pass
     ports:
-      - "3306:3306"
+      - "5432:5432"
     volumes:
-      - mysql_data:/var/lib/mysql
+      - postgres_data:/var/lib/postgresql/data
+      # Bootstraps a read-only `property_reader` role on first start.
+      # Mirrors what we provision in Supabase for production.
+      - ./backend/db/init_reader.sql:/docker-entrypoint-initdb.d/init_reader.sql:ro
     healthcheck:
-      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-uroot", "-proot"]
+      test: ["CMD-SHELL", "pg_isready -U property_user -d property_ai"]
       interval: 5s
       timeout: 5s
       retries: 20
 
 volumes:
-  mysql_data:
+  postgres_data:

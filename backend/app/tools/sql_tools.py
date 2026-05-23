@@ -1,6 +1,6 @@
 """SQL analytical tools.
 
-Six read-only functions over the rent-roll MySQL data. Every function:
+Six read-only functions over the rent-roll Postgres data. Every function:
 
   1. Takes `property_code` as a required first argument.
   2. Calls `require_scope(property_code)` to assert non-empty scope.
@@ -284,12 +284,12 @@ def get_expiring_leases(
                     lease_end,
                     monthly_rent,
                     balance,
-                    DATEDIFF(lease_end, :ref) AS days_until_expiry
+                    (lease_end - :ref) AS days_until_expiry
                 FROM leases
                 WHERE property_code = :code
                   AND lease_end IS NOT NULL
                   AND lease_end >= :ref
-                  AND lease_end <= DATE_ADD(:ref, INTERVAL :days DAY)
+                  AND lease_end <= (:ref + (:days || ' days')::interval)
                 ORDER BY lease_end ASC
                 LIMIT 100
             """),
@@ -334,15 +334,16 @@ def get_top_balances(
                 text("""
                     SELECT
                         unit_number,
-                        JSON_UNQUOTE(JSON_EXTRACT(raw_row, '$.tenant_id'))   AS tenant_id,
+                        raw_row ->> 'tenant_id'                                AS tenant_id,
                         monthly_rent,
-                        CAST(JSON_EXTRACT(raw_row, '$.balance') AS DECIMAL(12,2)) AS balance,
-                        JSON_UNQUOTE(JSON_EXTRACT(raw_row, '$.lease_end'))   AS lease_end,
-                        CASE WHEN occupied THEN 'current' ELSE 'vacant' END  AS status
+                        (raw_row ->> 'balance')::numeric(12,2)                 AS balance,
+                        raw_row ->> 'lease_end'                                AS lease_end,
+                        CASE WHEN occupied THEN 'current' ELSE 'vacant' END    AS status
                     FROM rent_snapshots
                     WHERE property_code = :code
                       AND snapshot_month = :month
-                      AND JSON_EXTRACT(raw_row, '$.balance') IS NOT NULL
+                      AND raw_row ? 'balance'
+                      AND raw_row -> 'balance' IS NOT NULL
                     ORDER BY balance DESC
                     LIMIT :n
                 """),
@@ -413,13 +414,13 @@ def get_lease_deposits(
                 text("""
                     SELECT
                         unit_number,
-                        JSON_UNQUOTE(JSON_EXTRACT(raw_row, '$.tenant_id'))         AS tenant_id,
-                        CAST(JSON_EXTRACT(raw_row, '$.resident_deposit') AS DECIMAL(12,2)) AS resident_deposit,
-                        CAST(JSON_EXTRACT(raw_row, '$.other_deposit')    AS DECIMAL(12,2)) AS other_deposit,
+                        raw_row ->> 'tenant_id'                          AS tenant_id,
+                        (raw_row ->> 'resident_deposit')::numeric(12,2)  AS resident_deposit,
+                        (raw_row ->> 'other_deposit')::numeric(12,2)     AS other_deposit,
                         monthly_rent,
-                        CAST(JSON_EXTRACT(raw_row, '$.balance')          AS DECIMAL(12,2)) AS balance,
-                        JSON_UNQUOTE(JSON_EXTRACT(raw_row, '$.move_in'))    AS lease_start,
-                        JSON_UNQUOTE(JSON_EXTRACT(raw_row, '$.lease_end'))  AS lease_end
+                        (raw_row ->> 'balance')::numeric(12,2)           AS balance,
+                        raw_row ->> 'move_in'                            AS lease_start,
+                        raw_row ->> 'lease_end'                          AS lease_end
                     FROM rent_snapshots
                     WHERE property_code=:code AND snapshot_month=:m
                     ORDER BY resident_deposit DESC, unit_number
@@ -430,10 +431,10 @@ def get_lease_deposits(
             agg = s.execute(
                 text("""
                     SELECT
-                        COUNT(*)                                                              AS leases,
-                        SUM(COALESCE(CAST(JSON_EXTRACT(raw_row, '$.resident_deposit') AS DECIMAL(12,2)), 0)) AS sum_resident_deposit,
-                        AVG(CAST(JSON_EXTRACT(raw_row, '$.resident_deposit') AS DECIMAL(12,2)))             AS avg_resident_deposit,
-                        SUM(COALESCE(CAST(JSON_EXTRACT(raw_row, '$.other_deposit')    AS DECIMAL(12,2)), 0)) AS sum_other_deposit
+                        COUNT(*)                                                                            AS leases,
+                        SUM(COALESCE((raw_row ->> 'resident_deposit')::numeric(12,2), 0))                   AS sum_resident_deposit,
+                        AVG((raw_row ->> 'resident_deposit')::numeric(12,2))                                AS avg_resident_deposit,
+                        SUM(COALESCE((raw_row ->> 'other_deposit')::numeric(12,2), 0))                     AS sum_other_deposit
                     FROM rent_snapshots
                     WHERE property_code=:code AND snapshot_month=:m
                 """),

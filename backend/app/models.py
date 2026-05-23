@@ -5,7 +5,13 @@ from datetime import date
 from sqlalchemy import (
     String, Integer, Float, Date, Boolean, ForeignKey, JSON, Index
 )
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
+
+
+# Use JSONB on Postgres for indexed `->`/`->>` access on raw_row; fall back
+# to generic JSON on other dialects (SQLite tests, MySQL, etc.).
+JSON_VARIANT = JSON().with_variant(JSONB(), "postgresql")
 
 
 class Base(DeclarativeBase):
@@ -70,7 +76,7 @@ class RentSnapshot(Base):
     unit_number: Mapped[str] = mapped_column(String(64))
     monthly_rent: Mapped[float | None] = mapped_column(Float, nullable=True)
     occupied: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
-    raw_row: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    raw_row: Mapped[dict | None] = mapped_column(JSON_VARIANT, nullable=True)
 
     property: Mapped[Property] = relationship(back_populates="snapshots")
     charge_lines: Mapped[list["RentChargeLine"]] = relationship(back_populates="snapshot", cascade="all, delete-orphan")

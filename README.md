@@ -2,7 +2,7 @@
 
 A chatbot scoped to a single property code (e.g. `115r`) that combines:
 
-- **Structured rent-roll data** (MySQL) — multiple properties × 12 monthly snapshots, unit-level rents, leases, charge-line breakdowns
+- **Structured rent-roll data** (Postgres) — multiple properties × 12 monthly snapshots, unit-level rents, leases, charge-line breakdowns
 - **Unstructured marketing content** (Chroma vector store v2) — scraped from property websites + PDFs, extracted with [docling](https://github.com/DS4SD/docling), embedded with the local multimodal **Jina-CLIP-v2** (ONNX) model
 - **Runtime LLM switching** across OpenAI, Anthropic, and Google Gemini
 - A **LangGraph** agent with 13 bound tools (SQL, RAG, summaries, occupancy, charts, multi-property compare, etc.) and SSE streaming
@@ -15,8 +15,8 @@ A chatbot scoped to a single property code (e.g. `115r`) that combines:
         │ /api/* → Vite proxy
         ▼
 [FastAPI :8000]  LangGraph agent
-        ├── MySQL 8.0  (docker compose)         — structured rent-roll data
-        ├── Chroma     (./chroma_db_v2/)        — vector store, cosine, dim 1024
+        ├── Postgres 16 (docker compose)        — structured rent-roll data
+        ├── Chroma      (./chroma_db_v2/)       — vector store, cosine, dim 1024
         ├── doc_store  (./doc_store/)           — extracted images & tables, served at /doc_store/*
         └── LLM APIs   OpenAI / Anthropic / Gemini
 ```
@@ -31,13 +31,13 @@ Embeddings are computed **locally** via ONNX Runtime — no embedding-API costs.
 
 ## Setup
 
-### 1. Start MySQL
+### 1. Start Postgres
 
 ```bash
 docker compose up -d
 ```
 
-Wait ~10s for the healthcheck to pass.
+Wait ~10s for the healthcheck to pass. On first start, [`backend/db/init_reader.sql`](backend/db/init_reader.sql) provisions the read-only `property_reader` role used by the `execute_scoped_sql` agent tool.
 
 ### 2. Backend
 
@@ -92,8 +92,8 @@ See [`backend/.env.example`](backend/.env.example) for the full list. Highlights
 
 | Var | Purpose |
 |---|---|
-| `MYSQL_*` | Connection to the dockerized MySQL |
-| `MYSQL_READER_*` | Read-only role used by the `execute_scoped_sql` agent tool |
+| `DATABASE_URL` | Postgres connection (docker locally; Supabase pooler on :6543 in prod) |
+| `DATABASE_READER_URL` | Read-only `property_reader` role for `execute_scoped_sql` |
 | `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` / `GOOGLE_API_KEY` | LLM providers (set whichever you use) |
 | `RAG_VERSION=v2` | Selects the docling + Jina pipeline |
 | `CHROMA_DIR_V2`, `COLLECTION_V2` | Local Chroma store location |
@@ -111,19 +111,20 @@ property-ai-assistant/
 │   │   ├── main.py                 FastAPI app, CORS, /doc_store mount
 │   │   ├── config.py               Settings + MODELS registry
 │   │   ├── db.py                   SQLAlchemy engine + init_db
-│   │   ├── models.py               ORM: properties/units/leases/rent_snapshots/rent_charge_lines
+│   │   ├── models.py               ORM: properties/units/leases/rent_snapshots/rent_charge_lines (raw_row → JSONB on Postgres)
 │   │   ├── schemas.py              Pydantic request/response shapes
 │   │   ├── graph/                  LangGraph agent (build.py, nodes.py)
 │   │   ├── tools/                  SQL + RAG tools bound to the agent
 │   │   ├── guardrails/             Property-scope filter + SQL validator
 │   │   └── ingestion/
-│   │       ├── rent_roll.py        Excel → MySQL
+│   │       ├── rent_roll.py        Excel → Postgres
 │   │       └── v2/                 docling pipeline, Jina embedder, Chroma upsert
 │   ├── ingest_all_aker.py          One-shot rent-roll loader
+│   ├── db/init_reader.sql          Bootstraps read-only role (docker + Supabase)
 │   ├── requirements.txt
 │   └── .env.example
 ├── frontend/                       React + Vite UI
-├── docker-compose.yml              MySQL 8.0 only
+├── docker-compose.yml              Postgres 16
 └── docs/architecture.md
 ```
 
