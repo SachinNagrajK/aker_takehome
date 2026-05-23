@@ -5,10 +5,10 @@ Per URL:
   2. structure-aware chunker → ordered Chunks (text / table / image)
   3. images & tables saved to the local doc store
   4. text + image chunks embedded via Jina v4 (modality-aware)
-  5. upsert into Chroma `property_chunks_v2`
+  5. upsert into Pinecone serverless index, namespace = property_code
 
-Property scope is the only `where` filter the retrieval side uses, so each
-chunk carries `property_code` in its metadata.
+Each property gets its own Pinecone namespace, so retrieval doesn't need a
+property_code metadata filter — the namespace is the scope guarantee.
 """
 from __future__ import annotations
 
@@ -28,8 +28,15 @@ from .extractor import extract
 
 log = logging.getLogger(__name__)
 
-_collection = None
-_collection_lock = threading.Lock()
+# Jina-CLIP-v2 produces 1024-dim vectors.
+_EMBED_DIM = 1024
+
+# Pinecone metadata is capped at 40 KB per vector — give text chunks plenty
+# of headroom but truncate aggressively if a single chunk is enormous.
+_MAX_TEXT_BYTES = 30_000
+
+_index = None
+_index_lock = threading.Lock()
 
 
 def _safe_url_slug(url: str) -> str:
@@ -42,39 +49,57 @@ def _stable_id(property_code: str, url: str, chunk_index: int, modality: str) ->
     return f"{property_code}__{_safe_url_slug(url)}__{modality}__{chunk_index:03d}"
 
 
+def get_index_v2():
+    """Open (or create) the Pinecone serverless index. Lazy singleton."""
+    global _index
+    if _index is not None:
+        return _index
+    with _index_lock:
+        if _index is not None:
+            return _index
+        from pinecone import Pinecone, ServerlessSpec
+
+        s = get_settings()
+        if not s.pinecone_api_key:
+            raise RuntimeError(
+                "PINECONE_API_KEY is not set — add it to backend/.env"
+            )
+        pc = Pinecone(api_key=s.pinecone_api_key)
+
+        existing = {ix["name"] for ix in pc.list_indexes()}
+        if s.pinecone_index not in existing:
+            log.info("Creating Pinecone index %s (dim=%d, cosine, %s/%s)",
+                     s.pinecone_index, _EMBED_DIM, s.pinecone_cloud, s.pinecone_region)
+            pc.create_index(
+                name=s.pinecone_index,
+                dimension=_EMBED_DIM,
+                metric="cosine",
+                spec=ServerlessSpec(cloud=s.pinecone_cloud, region=s.pinecone_region),
+            )
+        _index = pc.Index(s.pinecone_index)
+    return _index
+
+
+# Back-compat alias: callers historically said "collection" (Chroma terminology).
 def get_collection_v2():
-    """Open (or create) the v2 collection. Embeddings supplied at write/read time."""
-    global _collection
-    if _collection is not None:
-        return _collection
-    with _collection_lock:
-        if _collection is not None:
-            return _collection
-        import chromadb
-        from chromadb.config import Settings as ChromaSettings
-
-        settings = get_settings()
-        Path(settings.chroma_dir_v2).mkdir(parents=True, exist_ok=True)
-        client = chromadb.PersistentClient(
-            path=settings.chroma_dir_v2,
-            settings=ChromaSettings(anonymized_telemetry=False, allow_reset=True),
-        )
-        # No embedding_function — we precompute on write and pass
-        # `query_embeddings` on read so text & image vectors share a space.
-        _collection = client.get_or_create_collection(
-            name=settings.collection_v2,
-            metadata={"hnsw:space": "cosine"},
-        )
-    return _collection
+    return get_index_v2()
 
 
-def _meta_for_chroma(d: dict[str, Any]) -> dict[str, Any]:
-    """Chroma only stores scalar metadata. Drop None and stringify the rest."""
+def _meta_for_pinecone(d: dict[str, Any], text: str) -> dict[str, Any]:
+    """Pinecone metadata: scalars (str/int/float/bool) and list[str] only.
+    Drop None, stringify everything else, and store the chunk text under
+    `text` so retrieval can return it without a separate document store.
+    """
     out: dict[str, Any] = {}
+    if text:
+        body = text if len(text.encode("utf-8")) <= _MAX_TEXT_BYTES else text[: _MAX_TEXT_BYTES // 4]
+        out["text"] = body
     for k, v in d.items():
         if v is None:
             continue
         if isinstance(v, (str, int, float, bool)):
+            out[k] = v
+        elif isinstance(v, list) and all(isinstance(x, str) for x in v):
             out[k] = v
         else:
             out[k] = str(v)
@@ -86,15 +111,15 @@ def ingest_urls(
     urls: list[str],
     replace: bool = False,
 ) -> dict[str, Any]:
-    """Index a list of URLs into the v2 collection for one property."""
-    coll = get_collection_v2()
+    """Index a list of URLs into the Pinecone namespace for one property."""
+    index = get_index_v2()
     embedder = JinaV4Embedder.get()
 
     if replace:
         try:
-            coll.delete(where={"property_code": property_code})
+            index.delete(delete_all=True, namespace=property_code)
         except Exception as e:  # noqa: BLE001
-            log.warning("delete-by-property failed (ok on empty collection): %s", e)
+            log.warning("delete-all in namespace failed (ok if empty): %s", e)
 
     summary = {
         "property_code": property_code,
@@ -118,7 +143,6 @@ def ingest_urls(
         if not chunks:
             summary["errors"].append({"url": url, "stage": "chunk", "error": "no chunks produced"})
             continue
-        # Persist image bytes; replace metadata with public path.
         for ch in chunks:
             ch.metadata["property_code"] = property_code
             ch.metadata["modality"] = ch.modality
@@ -135,9 +159,9 @@ def ingest_urls(
     if not all_chunks:
         return summary
 
-    # Embed in two passes: text-like (text + table) and image (the image
-    # chunks). Tables are embedded as their markdown text — fine because the
-    # retrieval-side query is always text.
+    # Embed in two passes: text-like (text + table) and image. Tables are
+    # embedded as their markdown text — fine because retrieval always queries
+    # with a text vector.
     text_chunks = [c for c in all_chunks if c.modality in ("text", "table")]
     image_chunks = [c for c in all_chunks if c.modality == "image"]
 
@@ -148,11 +172,7 @@ def ingest_urls(
             embeddings_by_idx[id(c)] = v
 
     if image_chunks:
-        # Some platforms can't load the model in image mode (CPU-only without
-        # vision deps). Fall back to embedding the caption text instead so the
-        # image chunk is still searchable.
         try:
-            # We don't have raw bytes anymore (already saved); reload from disk.
             settings = get_settings()
             root = Path(settings.doc_store_dir)
             paths = [(root / c.metadata["image_path"]).read_bytes() for c in image_chunks]
@@ -163,31 +183,35 @@ def ingest_urls(
         for c, v in zip(image_chunks, img_vecs):
             embeddings_by_idx[id(c)] = v
 
-    ids: list[str] = []
-    docs: list[str] = []
-    metas: list[dict[str, Any]] = []
-    embs: list[list[float]] = []
+    vectors: list[dict[str, Any]] = []
+    dropped_zero = 0
     for ch in all_chunks:
+        vec = embeddings_by_idx[id(ch)]
+        # Pinecone rejects all-zero vectors (cosine undefined). The embedder
+        # uses zeros as a sentinel for images PIL couldn't decode; skip those.
+        if not any(vec):
+            dropped_zero += 1
+            continue
         cid = _stable_id(
             property_code,
             ch.metadata.get("url", ""),
             int(ch.metadata.get("chunk_index", 0)),
             ch.modality,
         )
-        ids.append(cid)
-        docs.append(ch.embed_input)
-        metas.append(_meta_for_chroma(ch.metadata))
-        embs.append(embeddings_by_idx[id(ch)])
+        vectors.append({
+            "id": cid,
+            "values": vec,
+            "metadata": _meta_for_pinecone(ch.metadata, ch.embed_input),
+        })
+    if dropped_zero:
+        log.warning("dropped %d chunks with zero-vector embedding (unreadable images)", dropped_zero)
+        summary.setdefault("dropped_unreadable", 0)
+        summary["dropped_unreadable"] = dropped_zero
 
-    # Upsert in modest batches.
-    BATCH = 64
-    for i in range(0, len(ids), BATCH):
-        coll.upsert(
-            ids=ids[i:i + BATCH],
-            documents=docs[i:i + BATCH],
-            metadatas=metas[i:i + BATCH],
-            embeddings=embs[i:i + BATCH],
-        )
+    # Pinecone recommends batches of <= 100 vectors per upsert.
+    BATCH = 96
+    for i in range(0, len(vectors), BATCH):
+        index.upsert(vectors=vectors[i:i + BATCH], namespace=property_code)
 
-    summary["chunks_indexed"] = len(ids)
+    summary["chunks_indexed"] = len(vectors)
     return summary

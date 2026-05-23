@@ -1,134 +1,42 @@
-"""RAG retrieval tool — Chroma collection wrapped with property scoping.
+"""RAG retrieval tool — Pinecone serverless wrapped with property scoping.
 
 This is the only place outside ingestion that touches the vector store.
 The contract mirrors `sql_tools.py`:
 
   1. First line of every public function is `require_scope(property_code)`.
-  2. Every Chroma query passes `where={"property_code": code}` — the metadata
-     filter is the hard guarantee at the vector-store layer.
+  2. Every Pinecone query uses `namespace=code` — namespace-per-property is
+     the hard scope guarantee at the vector-store layer (no metadata filter
+     can leak across properties).
   3. Returns plain dicts ready for the response composer / LLM context.
 
-The collection itself is created and populated by
-`app/ingestion/scrape_and_index.py`. Here we only read from it.
+The index itself is created and populated by
+`app/ingestion/v2/pipeline.py`. Here we only read from it.
 """
 from __future__ import annotations
 
-import threading
 from typing import Any
 
 from ..config import get_settings
 from ..guardrails.scope import require_scope
 
 
-# ---------------------------------------------------------------------------
-# Collection handle (lazy + thread-safe singleton)
-# ---------------------------------------------------------------------------
-
-_collection = None
-_collection_lock = threading.Lock()
-
-
-def _get_collection():
-    """Return the shared Chroma collection, opening it once."""
-    global _collection
-    if _collection is not None:
-        return _collection
-    with _collection_lock:
-        if _collection is None:
-            # Reuse the same factory used by the indexer so embedding
-            # functions stay aligned between write and read paths.
-            from ..ingestion.scrape_and_index import get_collection
-            _collection, _ = get_collection()
-    return _collection
+# Pinecone returns cosine SIMILARITY in `score` (1 = identical, -1 = opposite).
+# The legacy code assumed cosine DISTANCE (0 = identical, 2 = opposite), so
+# convert at the boundary and keep all downstream thresholds unchanged.
+def _to_distance(score: float | None) -> float:
+    if score is None:
+        return 1.0
+    return float(1.0 - score)
 
 
 # ---------------------------------------------------------------------------
-# Public API
+# Public API — v1 (text-only). Retained as a thin shim around v2 so the
+# graph can still call search_property_active() without a flag check on
+# the v1 path. The actual retrieval is v2-flavoured (Pinecone).
 # ---------------------------------------------------------------------------
 
 DEFAULT_K = 4
 MAX_K = 10
-
-
-def search_property(
-    property_code: str,
-    query: str,
-    k: int = DEFAULT_K,
-) -> dict[str, Any]:
-    """Top-k chunks for `query`, hard-filtered to `property_code`.
-
-    Returns:
-        {
-          "property_code": str,
-          "query": str,
-          "row_count": int,
-          "chunks": [
-            {
-              "text": str,
-              "url": str,
-              "page_title": str,
-              "chunk_index": int,
-              "distance": float,
-            }, ...
-          ],
-          "sources": [{"label": str, "url": str}, ...],   # deduped by URL
-        }
-    """
-    code = require_scope(property_code)
-    if not query or not query.strip():
-        return {
-            "property_code": code, "query": query, "row_count": 0,
-            "chunks": [], "sources": [],
-        }
-    k = max(1, min(int(k or DEFAULT_K), MAX_K))
-
-    coll = _get_collection()
-
-    # The `where` filter is the scope guarantee at the vector layer.
-    res = coll.query(
-        query_texts=[query],
-        n_results=k,
-        where={"property_code": code},
-    )
-
-    docs  = res.get("documents", [[]])[0]
-    metas = res.get("metadatas", [[]])[0]
-    dists = res.get("distances", [[]])[0]
-
-    chunks: list[dict[str, Any]] = []
-    for doc, meta, dist in zip(docs, metas, dists):
-        # Defensive: even if Chroma somehow returned a row from another
-        # property, drop it. (Should never happen with `where` filter.)
-        if meta.get("property_code") != code:
-            continue
-        chunks.append({
-            "text": doc,
-            "url": meta.get("url"),
-            "page_title": meta.get("page_title"),
-            "chunk_index": meta.get("chunk_index"),
-            "distance": float(dist) if dist is not None else None,
-        })
-
-    # Dedupe sources by URL while preserving order.
-    seen: set[str] = set()
-    sources: list[dict[str, str]] = []
-    for ch in chunks:
-        u = ch["url"]
-        if u and u not in seen:
-            seen.add(u)
-            label = ch.get("page_title") or u
-            # Trim a typical "X | Property Name" suffix in page titles.
-            if "|" in label:
-                label = label.split("|", 1)[0].strip()
-            sources.append({"label": label, "url": u})
-
-    return {
-        "property_code": code,
-        "query": query,
-        "row_count": len(chunks),
-        "chunks": chunks,
-        "sources": sources,
-    }
 
 
 def build_context_block(chunks: list[dict[str, Any]]) -> str:
@@ -145,7 +53,7 @@ def build_context_block(chunks: list[dict[str, Any]]) -> str:
 
 
 # ---------------------------------------------------------------------------
-# v2 — docling + Jina v4 multimodal
+# v2 — docling + Jina v4 multimodal, on Pinecone
 # ---------------------------------------------------------------------------
 
 # CLIP image-vs-text cosine distances sit in a different band than
@@ -159,8 +67,6 @@ _HARD_CAP_MAX_IMAGES = 25       # absolute ceiling when caller asks for "all"
 _IMAGE_QUERY_K_MULT  = 4        # over-fetch this many * max so boost has room
 
 # Map query keywords → URL substrings that suggest a relevant page section.
-# When the query contains any of the keys, images whose URL or section_path
-# contains the corresponding value get a 0.25 distance bonus (lower = better).
 _SECTION_HINTS = {
     "amenit":      ["amenit"],
     "gallery":     ["gallery", "gallerie"],
@@ -191,7 +97,6 @@ def _hint_terms_for(query: str) -> list[str]:
     for trigger, url_hints in _SECTION_HINTS.items():
         if trigger in q:
             hits.extend(url_hints)
-    # Dedupe while preserving order
     seen: set[str] = set()
     out: list[str] = []
     for h in hits:
@@ -207,7 +112,7 @@ def search_property_v2(
     k: int = 8,
     max_images: int = _DEFAULT_MAX_IMAGES,
 ) -> dict[str, Any]:
-    """Query the v2 collection. Returns text chunks + a separate `images` list.
+    """Query the v2 Pinecone index. Returns text chunks + a separate `images` list.
 
     The returned `images` carry public `/doc_store/...` URLs ready to be
     rendered as an `image` UIComponent by the chat composer.
@@ -219,46 +124,35 @@ def search_property_v2(
             "chunks": [], "images": [], "sources": [],
         }
     k = max(1, min(int(k or DEFAULT_K), MAX_K))
-    # Clamp & default the image cap. Over-fetch image candidates 4x so the
-    # URL-keyword boost has room to re-rank before truncating.
     max_images = max(1, min(int(max_images or _DEFAULT_MAX_IMAGES), _HARD_CAP_MAX_IMAGES))
     image_query_k = min(max_images * _IMAGE_QUERY_K_MULT, 60)
 
-    from ..ingestion.v2.doc_store import public_url
     from ..ingestion.v2.embedder import JinaV4Embedder
-    from ..ingestion.v2.pipeline import get_collection_v2
+    from ..ingestion.v2.pipeline import get_index_v2
 
-    coll = get_collection_v2()
+    index = get_index_v2()
     embedder = JinaV4Embedder.get()
     qvec = embedder.embed_query(query)
 
     # Pass 1: text/table chunks for the LLM context.
-    res = coll.query(
-        query_embeddings=[qvec],
-        n_results=k,
-        where={
-            "$and": [
-                {"property_code": code},
-                {"modality": {"$in": ["text", "table"]}},
-            ]
-        },
+    res = index.query(
+        vector=qvec,
+        top_k=k,
+        namespace=code,
+        filter={"modality": {"$in": ["text", "table"]}},
+        include_metadata=True,
     )
-    docs  = (res.get("documents") or [[]])[0]
-    metas = (res.get("metadatas") or [[]])[0]
-    dists = (res.get("distances") or [[]])[0]
-
     chunks: list[dict[str, Any]] = []
-    for doc, meta, dist in zip(docs, metas, dists):
-        if (meta or {}).get("property_code") != code:
-            continue
+    for m in (res.get("matches") or []):
+        meta = m.get("metadata") or {}
         chunks.append({
-            "text": doc,
+            "text": meta.get("text"),
             "url": meta.get("url"),
             "page_title": meta.get("page_title"),
             "section_path": meta.get("section_path"),
             "modality": meta.get("modality", "text"),
             "chunk_index": meta.get("chunk_index"),
-            "distance": float(dist) if dist is not None else None,
+            "distance": _to_distance(m.get("score")),
             "caption": meta.get("caption"),
             "image_path": meta.get("image_path"),
             "table_html": meta.get("table_html"),
@@ -270,38 +164,28 @@ def search_property_v2(
     images: list[dict[str, Any]] = []
     seen_image_paths: set[str] = set()
     try:
-        img_res = coll.query(
-            query_embeddings=[qvec],
-            n_results=image_query_k,
-            where={
-                "$and": [
-                    {"property_code": code},
-                    {"modality": "image"},
-                ]
-            },
+        img_res = index.query(
+            vector=qvec,
+            top_k=image_query_k,
+            namespace=code,
+            filter={"modality": "image"},
+            include_metadata=True,
         )
     except Exception:  # noqa: BLE001
-        img_res = {"documents": [[]], "metadatas": [[]], "distances": [[]]}
-
-    img_metas = (img_res.get("metadatas") or [[]])[0]
-    img_dists = (img_res.get("distances") or [[]])[0]
+        img_res = {"matches": []}
 
     hint_terms = _hint_terms_for(query)
 
-    # Re-rank: apply URL-keyword boost so a "show me amenities" query
-    # prefers images scraped from /amenities/ over lifestyle gallery photos.
     candidates: list[dict[str, Any]] = []
-    for meta, dist in zip(img_metas, img_dists):
-        if (meta or {}).get("property_code") != code:
-            continue
+    for m in (img_res.get("matches") or []):
+        meta = m.get("metadata") or {}
         path = meta.get("image_path")
         if not path:
             continue
-        d = float(dist) if dist is not None else 1.0
+        d = _to_distance(m.get("score"))
         url = (meta.get("url") or "").lower()
         section = (meta.get("section_path") or "").lower()
         caption = (meta.get("caption") or "").lower()
-        # Boost if any hint term appears in URL/section/caption.
         matched_hint = False
         if hint_terms:
             for h in hint_terms:
@@ -314,16 +198,13 @@ def search_property_v2(
             "adj_dist": adjusted, "boosted": matched_hint,
         })
 
-    # Sort by adjusted distance ascending (closer = better).
     candidates.sort(key=lambda c: c["adj_dist"])
 
+    from ..ingestion.v2.doc_store import public_url
     for c in candidates:
         path = c["path"]
         if path in seen_image_paths:
             continue
-        # When the query has section hints but no images matched them,
-        # apply a stricter raw-distance cap so we don't surface irrelevant
-        # lifestyle photos. Otherwise use the normal threshold.
         cap = _DISTANCE_THRESHOLD_IMAGE
         if hint_terms and not c["boosted"]:
             cap = 0.92
@@ -342,7 +223,6 @@ def search_property_v2(
         if len(images) >= max_images:
             break
 
-    # Dedupe sources by page URL while preserving order.
     seen: set[str] = set()
     sources: list[dict[str, str]] = []
     for ch in chunks:
@@ -394,19 +274,23 @@ def search_property_active(
     k: int = DEFAULT_K,
     max_images: int = _DEFAULT_MAX_IMAGES,
 ) -> dict[str, Any]:
-    """Dispatch to v1 or v2 based on RAG_VERSION setting."""
-    version = (get_settings().rag_version or "v2").lower()
-    if version == "v1":
-        return search_property(property_code, query, k=k)
+    """Dispatch to v2 retrieval. (v1 path retired with the Chroma swap.)"""
     return search_property_v2(property_code, query, k=k, max_images=max_images)
 
 
 def has_content(property_code: str) -> bool:
-    """Cheap check — does this property have any indexed chunks?"""
+    """Cheap check — does this property have any indexed chunks?
+
+    Uses Pinecone's per-namespace stats so we don't pay for a query.
+    """
     code = require_scope(property_code)
-    coll = _get_collection()
     try:
-        res = coll.get(where={"property_code": code}, limit=1)
-        return bool(res.get("ids"))
+        from ..ingestion.v2.pipeline import get_index_v2
+        index = get_index_v2()
+        stats = index.describe_index_stats()
+        ns = (stats.get("namespaces") or {}).get(code)
+        if not ns:
+            return False
+        return int(ns.get("vector_count", 0)) > 0
     except Exception:
         return False

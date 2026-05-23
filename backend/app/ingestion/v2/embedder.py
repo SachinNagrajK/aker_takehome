@@ -40,6 +40,12 @@ _VARIANT_FILES = {
 _IMAGE_SIZE = 512
 _EMBED_DIM = 1024
 
+# Internal batching caps — the jina-clip-v2 graph runs both towers on every
+# call, so a single MatMul in the vision branch wants ~1.5 GB at batch=20.
+# Process in small batches to keep peak RAM well under 1 GB on CPU.
+_TEXT_BATCH = 8
+_IMAGE_BATCH = 4
+
 
 class JinaV4Embedder:
     """Single-instance jina-clip-v2 embedder. Name kept for caller compatibility."""
@@ -103,33 +109,35 @@ class JinaV4Embedder:
             log.info("Embedder ready. inputs=%s outputs=%s", self._input_names, self._output_names)
 
     # ---------- text ----------
-    def embed_text(self, texts: list[str]) -> list[list[float]]:
-        if not texts:
-            return []
-        self._ensure_loaded()
+    def _embed_text_batch(self, texts: list[str]) -> list[list[float]]:
         enc = self._tokenizer(
             texts, padding=True, truncation=True, max_length=512, return_tensors="np",
         )
         input_ids = enc["input_ids"].astype(np.int64)
         batch = input_ids.shape[0]
-        feed = {"input_ids": input_ids}
-        # Model graph requires BOTH inputs even when we only want text;
-        # supply a zero pixel_values tensor matching the expected shape.
-        feed["pixel_values"] = np.zeros((batch, 3, _IMAGE_SIZE, _IMAGE_SIZE), dtype=np.float32)
+        feed = {
+            "input_ids": input_ids,
+            # Model graph requires BOTH inputs even for text-only; feed zeros.
+            "pixel_values": np.zeros((batch, 3, _IMAGE_SIZE, _IMAGE_SIZE), dtype=np.float32),
+        }
         out = self._session.run(["l2norm_text_embeddings"], feed)
         return np.asarray(out[0], dtype=np.float32).tolist()
+
+    def embed_text(self, texts: list[str]) -> list[list[float]]:
+        if not texts:
+            return []
+        self._ensure_loaded()
+        results: list[list[float]] = []
+        for i in range(0, len(texts), _TEXT_BATCH):
+            results.extend(self._embed_text_batch(texts[i:i + _TEXT_BATCH]))
+        return results
 
     def embed_query(self, text: str) -> list[float]:
         return self.embed_text([text])[0]
 
     # ---------- image ----------
-    def embed_image(self, images: list[bytes]) -> list[list[float]]:
-        if not images:
-            return []
-        self._ensure_loaded()
-        from PIL import Image
-        pil = [Image.open(BytesIO(b)).convert("RGB") for b in images]
-        proc = self._processor(images=pil, return_tensors="np")
+    def _embed_image_batch(self, pil_imgs: list) -> list[list[float]]:
+        proc = self._processor(images=pil_imgs, return_tensors="np")
         pixel_values = proc["pixel_values"]
         # jina-clip-v2 ships a timm-backed processor that returns torch.Tensor
         # regardless of return_tensors. Coerce to numpy.
@@ -137,7 +145,6 @@ class JinaV4Embedder:
             pixel_values = pixel_values.detach().cpu().numpy()
         pixel_values = np.asarray(pixel_values, dtype=np.float32)
         batch = pixel_values.shape[0]
-        # Dummy input_ids (single pad token per row) to satisfy the graph.
         pad_id = int(getattr(self._tokenizer, "pad_token_id", 0) or 0)
         feed = {
             "input_ids": np.full((batch, 1), pad_id, dtype=np.int64),
@@ -145,6 +152,41 @@ class JinaV4Embedder:
         }
         out = self._session.run(["l2norm_image_embeddings"], feed)
         return np.asarray(out[0], dtype=np.float32).tolist()
+
+    def embed_image(self, images: list[bytes]) -> list[list[float]]:
+        """Embed image bytes. Skips bad/unreadable images by emitting a zero
+        vector at that position so caller's index alignment is preserved.
+        """
+        if not images:
+            return []
+        self._ensure_loaded()
+        from PIL import Image
+        pils: list = []
+        ok_mask: list[bool] = []
+        for b in images:
+            try:
+                pils.append(Image.open(BytesIO(b)).convert("RGB"))
+                ok_mask.append(True)
+            except Exception as e:  # noqa: BLE001
+                log.warning("skipping unreadable image: %s", e)
+                pils.append(None)
+                ok_mask.append(False)
+        # Embed only the good ones, batched.
+        good_pils = [p for p, ok in zip(pils, ok_mask) if ok]
+        good_vecs: list[list[float]] = []
+        for i in range(0, len(good_pils), _IMAGE_BATCH):
+            good_vecs.extend(self._embed_image_batch(good_pils[i:i + _IMAGE_BATCH]))
+        # Re-thread results, putting zero-vec placeholders for the skipped ones.
+        out: list[list[float]] = []
+        gi = 0
+        zero = [0.0] * _EMBED_DIM
+        for ok in ok_mask:
+            if ok:
+                out.append(good_vecs[gi])
+                gi += 1
+            else:
+                out.append(zero)
+        return out
 
     # ---------- Chroma EmbeddingFunction surface ----------
     def __call__(self, input: list[str]) -> list[list[float]]:  # noqa: A002

@@ -17,8 +17,8 @@ requests==2.32.3
 beautifulsoup4==4.12.3
 lxml==5.3.0
 
-# RAG (v1)
-chromadb==0.5.15
+# RAG vector store — Pinecone serverless (free starter tier)
+pinecone==5.4.2
 
 # RAG v2 — multimodal ingestion (docling) + jina-clip-v2 ONNX int8 embeddings
 docling==2.91.0
