@@ -1,6 +1,9 @@
-// Thin API client. The Vite dev server proxies /api/* to the FastAPI backend
-// at http://127.0.0.1:8000. In production you'd set this to the real URL.
-const BASE = '/api'
+// Thin API client.
+//
+// Dev:   VITE_API_BASE is unset → BASE='/api' → Vite proxies to local uvicorn.
+// Prod:  VITE_API_BASE='https://<space>.hf.space' → calls hit HF Space directly.
+//        Backend CORS_ORIGINS must include the Vercel origin in that case.
+const BASE = (import.meta.env.VITE_API_BASE || '/api').replace(/\/$/, '')
 
 async function json(path, opts = {}) {
   const r = await fetch(`${BASE}${path}`, {
