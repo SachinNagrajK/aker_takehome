@@ -57,35 +57,44 @@ def build_context_block(chunks: list[dict[str, Any]]) -> str:
 # ---------------------------------------------------------------------------
 
 # CLIP image-vs-text cosine distances sit in a different band than
-# text-vs-text (typically 0.8-1.1 vs 0.4-0.7). Pure-distance filtering picks
+# text-vs-text (typically 0.5-0.8 vs 0.4-0.7). Pure-distance filtering picks
 # up irrelevant lifestyle photos for abstract queries like "amenities" — so
 # we ALSO boost candidates whose source URL or section_path matches a
 # page-section keyword in the user's query (e.g. "gym pool" → /amenities/).
-_DISTANCE_THRESHOLD_IMAGE = 1.05
+#
+# Threshold tuning: empirically, real amenity photos for a query land at
+# ~0.65-0.72; template hero photos that get reused across every page land
+# at ~0.74-0.78. The 0.73 hard cap drops the latter without losing the former.
+_DISTANCE_THRESHOLD_IMAGE = 0.78
+_HARD_DISTANCE_CEILING_NO_BOOST = 0.73  # unboosted candidates with hints
 _DEFAULT_MAX_IMAGES = 3
 _HARD_CAP_MAX_IMAGES = 25       # absolute ceiling when caller asks for "all"
 _IMAGE_QUERY_K_MULT  = 4        # over-fetch this many * max so boost has room
 
 # Map query keywords → URL substrings that suggest a relevant page section.
 _SECTION_HINTS = {
-    "amenit":      ["amenit"],
+    # Marketing sites split amenity photos between /amenities/ (usually a
+    # text-heavy page with one hero) and /gallery/ (where the actual gym /
+    # lobby / kitchen photos live). Always include both for amenity-style
+    # queries so the relevant images surface.
+    "amenit":      ["amenit", "gallery"],
+    "amenities":   ["amenit", "gallery"],
+    "gym":         ["amenit", "gallery"],
+    "fitness":     ["amenit", "gallery"],
+    "pool":        ["amenit", "gallery"],
+    "kitchen":     ["amenit", "gallery", "feature"],
+    "lounge":      ["amenit", "gallery"],
+    "clubroom":    ["amenit", "gallery"],
+    "lobby":       ["amenit", "gallery"],
     "gallery":     ["gallery", "gallerie"],
     "photo":       ["gallery", "gallerie"],
     "picture":     ["gallery", "gallerie"],
     "image":       ["gallery", "gallerie"],
     "floor plan":  ["floorplan", "floor-plan"],
     "floorplan":   ["floorplan", "floor-plan"],
+    "bedroom":     ["floorplan", "gallery"],
     "neighborhood":["neighborhood", "neighbourhood"],
     "neighbor":    ["neighborhood", "neighbourhood"],
-    "amenities":   ["amenit"],
-    "pool":        ["amenit", "gallery"],
-    "gym":         ["amenit"],
-    "fitness":     ["amenit"],
-    "kitchen":     ["amenit", "gallery", "feature"],
-    "bedroom":     ["floorplan", "gallery"],
-    "lounge":      ["amenit", "gallery"],
-    "clubroom":    ["amenit"],
-    "lobby":       ["amenit", "gallery"],
 }
 _BOOST_DISTANCE = 0.25  # subtracted from candidate distance on hint match
 
@@ -205,9 +214,10 @@ def search_property_v2(
         path = c["path"]
         if path in seen_image_paths:
             continue
-        cap = _DISTANCE_THRESHOLD_IMAGE
-        if hint_terms and not c["boosted"]:
-            cap = 0.92
+        # Tighter cap for unboosted candidates when the query has section
+        # hints — drops template hero photos that pad the result list with
+        # near-duplicates of the same image.
+        cap = _HARD_DISTANCE_CEILING_NO_BOOST if (hint_terms and not c["boosted"]) else _DISTANCE_THRESHOLD_IMAGE
         if c["raw_dist"] > cap:
             continue
         meta = c["meta"]
