@@ -54,6 +54,11 @@ class Settings:
     pinecone_cloud: str = os.getenv("PINECONE_CLOUD", "aws")
     pinecone_region: str = os.getenv("PINECONE_REGION", "us-east-1")
     doc_store_dir: str = os.getenv("DOC_STORE_DIR", str(_BACKEND_DIR / "doc_store"))
+    # Image/table artifacts move to Supabase Storage in production; the local
+    # doc_store dir stays as an ingestion-time cache only.
+    supabase_url: str | None = os.getenv("SUPABASE_URL") or None
+    supabase_service_role_key: str | None = os.getenv("SUPABASE_SERVICE_ROLE_KEY") or None
+    supabase_storage_bucket: str = os.getenv("SUPABASE_STORAGE_BUCKET", "doc-store")
     embedding_model_v2: str = os.getenv("EMBEDDING_MODEL_V2", "jinaai/jina-clip-v2")
     embedding_quant: str = os.getenv("EMBEDDING_QUANT", "int8")  # int8 | fp32 (ONNX runtime)
     admin_token: str | None = os.getenv("ADMIN_TOKEN") or None

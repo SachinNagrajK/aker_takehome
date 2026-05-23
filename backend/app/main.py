@@ -18,11 +18,9 @@ from __future__ import annotations
 import json
 import logging
 import uuid
-from pathlib import Path
 from fastapi import FastAPI, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
-from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 
@@ -50,12 +48,9 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Mount the local image/table doc store for v2 RAG so the frontend can
-# load `<img src="/doc_store/{property}/{hash}.png" />`. Created up-front
-# so StaticFiles doesn't reject a missing dir at import time.
-_doc_root = Path(settings.doc_store_dir)
-_doc_root.mkdir(parents=True, exist_ok=True)
-app.mount("/doc_store", StaticFiles(directory=str(_doc_root)), name="doc_store")
+# Image/table artifacts live in Supabase Storage (public bucket). The
+# frontend loads them directly via the fully-qualified Supabase URL that
+# rag_tools returns — no static mount needed here.
 
 
 @app.on_event("startup")
