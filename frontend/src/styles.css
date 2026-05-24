@@ -806,35 +806,37 @@ select:focus, input:focus, textarea:focus {
   font-family: "Fraunces", "Inter", serif;
   font-weight: 400;
   font-size: clamp(34px, 4.6vw, 52px);
-  line-height: 1.08;
+  line-height: 1.12;
   letter-spacing: -0.025em;
-  margin: 0 0 24px;
+  margin: 0 0 64px;
   color: var(--text);
+  /* Lay out as a flex row so the static "Ask about" and the rotating word
+     share a perfectly-aligned baseline regardless of word length. */
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.32em;
+}
+.empty-aker-headline .ask-prefix {
+  display: inline-block;
 }
 .empty-aker-headline .rotating-word-slot {
+  /* inline-flex so the rotating-word's height drives the slot's height,
+     and overflow stays visible so italic descenders (g, p, y) aren't clipped. */
   position: relative;
-  display: inline-block;
-  /* Reserve width for the longest expected word so the layout doesn't reflow. */
-  min-width: 6.5ch;
-  height: 1em;
-  vertical-align: baseline;
-  overflow: hidden;
+  display: inline-flex;
+  align-items: baseline;
+  overflow: visible;
 }
 .empty-aker-headline .rotating-word {
-  position: absolute;
-  left: 0;
-  bottom: 0;
+  display: inline-block;
   white-space: nowrap;
   font-style: italic;
   color: var(--accent);
   font-weight: 500;
-}
-.empty-aker-sub {
-  font-size: 15px;
-  line-height: 1.65;
-  color: var(--text-dim);
-  max-width: 540px;
-  margin: 0 0 56px;
+  /* Extra padding-right so italic letters at the end never get clipped by
+     subpixel rounding even on the widest words. */
+  padding-right: 2px;
 }
 
 /* Numbered rotator: 01 — example prompt fades through. */
@@ -881,8 +883,7 @@ select:focus, input:focus, textarea:focus {
 
 @media (max-width: 640px) {
   .empty-aker { padding: 56px 18px 24px; }
-  .empty-aker-headline { font-size: 30px; }
-  .empty-aker-sub { margin-bottom: 36px; }
+  .empty-aker-headline { font-size: 30px; margin-bottom: 44px; }
   .empty-aker-rotator .rotator-text { font-size: 15px; }
 }
 

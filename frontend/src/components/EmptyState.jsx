@@ -59,7 +59,7 @@ export default function EmptyState({ propertyName }) {
           animate={{ opacity: 1, y: 0 }}
           transition={{ duration: 0.4 }}
         >
-          Property AI
+          Aker AI
         </motion.div>
         <motion.h1
           className="empty-aker-headline"
@@ -84,7 +84,7 @@ export default function EmptyState({ propertyName }) {
         animate={{ opacity: 1, y: 0 }}
         transition={{ duration: 0.4 }}
       >
-        Property AI · {propertyName}
+        Aker AI · {propertyName}
       </motion.div>
 
       <motion.h1
@@ -93,33 +93,23 @@ export default function EmptyState({ propertyName }) {
         animate={{ opacity: 1, y: 0 }}
         transition={{ delay: 0.05, duration: 0.5, ease: 'easeOut' }}
       >
-        Ask about{' '}
+        <span className="ask-prefix">Ask about</span>
+        {' '}
         <span className="rotating-word-slot">
           <AnimatePresence mode="wait" initial={false}>
             <motion.span
               key={ROTATING_WORDS[wordIdx]}
               className="rotating-word"
-              initial={{ y: 22, opacity: 0 }}
+              initial={{ y: 18, opacity: 0 }}
               animate={{ y: 0, opacity: 1 }}
-              exit={{ y: -22, opacity: 0 }}
-              transition={{ duration: 0.42, ease: [0.2, 0.65, 0.3, 0.95] }}
+              exit={{ y: -18, opacity: 0 }}
+              transition={{ duration: 0.4, ease: [0.2, 0.65, 0.3, 0.95] }}
             >
               {ROTATING_WORDS[wordIdx]}
             </motion.span>
           </AnimatePresence>
         </span>
-        .
       </motion.h1>
-
-      <motion.div
-        className="empty-aker-sub"
-        initial={{ opacity: 0 }}
-        animate={{ opacity: 1 }}
-        transition={{ delay: 0.25, duration: 0.5 }}
-      >
-        Numbers from the rent roll, photos from the marketing site, charts on
-        request — quiet, scoped to this property.
-      </motion.div>
 
       <div className="empty-aker-rotator">
         <motion.span
@@ -132,7 +122,6 @@ export default function EmptyState({ propertyName }) {
         >
           {seq}
         </motion.span>
-        <span className="rule" aria-hidden="true" />
         <div className="rotator-line">
           <AnimatePresence mode="wait" initial={false}>
             <motion.span
