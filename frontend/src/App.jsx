@@ -319,8 +319,6 @@ export default function App() {
               {messages.length === 0 && (
                 <EmptyState
                   propertyName={activeProperty?.property_name || null}
-                  disabled={busy || !llm}
-                  onPick={handleSend}
                 />
               )}
               {messages.map((msg, i) => <Message key={i} msg={msg} />)}

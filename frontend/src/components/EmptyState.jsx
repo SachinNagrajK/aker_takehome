@@ -1,165 +1,153 @@
-// Animated empty-state hero for the chat surface. Shows a rotating tagline
-// over a grid of suggestion cards (each with an icon and example prompt).
-// Click any card to submit that prompt immediately.
-import { useEffect, useMemo, useState } from 'react'
+// Empty-state hero, restrained Aker-style. No clickable cards — pure
+// visual: a serif headline, a slowly-rotating italic accent word, and a
+// numbered "01/02/03" rotator below that cycles through example prompts.
+//
+// Aesthetic notes (matching akercompanies.com):
+//   - Generous whitespace, no decorative cards or borders.
+//   - Serif headline + sans-serif body for hierarchy.
+//   - Numbered sections (01, 02, 03…) for rhythm.
+//   - Calm motion only — slide+fade transitions, ~2.5s cadence.
+//   - Single warm accent on a single italic word.
+import { useEffect, useState } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
-import {
-  TrendingUp, ListChecks, Wallet, CalendarClock,
-  Image as ImageIcon, BarChart3, Building, Sparkles,
-} from 'lucide-react'
 
-// Six suggestion cards covering the agent's main capability surfaces.
-// The ordering balances financial / leasing / operations / visual / chart so
-// no two adjacent cards feel like duplicates.
-const CARDS = [
-  {
-    icon: TrendingUp,
-    title: 'Rent trend',
-    prompt: 'How has the average rent changed over the year?',
-    hint: 'Chart',
-  },
-  {
-    icon: ListChecks,
-    title: 'Unit mix',
-    prompt: 'Show me the unit mix breakdown.',
-    hint: 'Table',
-  },
-  {
-    icon: Wallet,
-    title: 'Top balances',
-    prompt: 'Which units have the highest outstanding balance?',
-    hint: 'List',
-  },
-  {
-    icon: CalendarClock,
-    title: 'Expiring leases',
-    prompt: 'Which leases are expiring in the next 90 days?',
-    hint: 'List',
-  },
-  {
-    icon: ImageIcon,
-    title: 'Amenities & gallery',
-    prompt: 'Show me the gallery and amenities',
-    hint: 'Photos',
-  },
-  {
-    icon: BarChart3,
-    title: 'Compare units',
-    prompt: 'Compare units 301 and 302 — rent, sqft, market rent.',
-    hint: 'Chart',
-  },
-]
-
-// Rotating one-word descriptors that loop under the headline. Pure visual
-// flourish to signal "this thing does many things".
+// Italic words cycled inside the tagline.
 const ROTATING_WORDS = [
-  'rent',
-  'leases',
+  'rent rolls',
   'occupancy',
+  'leases',
   'amenities',
   'floor plans',
-  'charges',
   'photos',
   'trends',
+  'move-outs',
+  'charges',
 ]
 
-const fadeUp = {
-  hidden: { opacity: 0, y: 8 },
-  visible: (i = 0) => ({
-    opacity: 1,
-    y: 0,
-    transition: { delay: 0.04 * i, duration: 0.32, ease: 'easeOut' },
-  }),
-}
+// Generic example prompts — every one works on any property in the dataset.
+// No unit numbers, no property-specific references.
+const PROMPTS = [
+  'What is the average rent and current occupancy?',
+  'Show me the gallery and amenities.',
+  'How has the rent changed over the year?',
+  'Which leases are expiring in the next 90 days?',
+  'List the units with the highest outstanding balance.',
+  'Give me the unit-mix breakdown.',
+  'What does the floor-plan page look like?',
+  'How many units are vacant right now?',
+]
 
-export default function EmptyState({ propertyName, onPick, disabled }) {
-  const [wordIndex, setWordIndex] = useState(0)
+const WORD_INTERVAL_MS = 2200
+const PROMPT_INTERVAL_MS = 3400
+
+export default function EmptyState({ propertyName }) {
+  const [wordIdx, setWordIdx] = useState(0)
+  const [promptIdx, setPromptIdx] = useState(0)
 
   useEffect(() => {
-    const id = setInterval(() => {
-      setWordIndex((i) => (i + 1) % ROTATING_WORDS.length)
-    }, 2200)
-    return () => clearInterval(id)
+    const w = setInterval(() => setWordIdx((i) => (i + 1) % ROTATING_WORDS.length), WORD_INTERVAL_MS)
+    const p = setInterval(() => setPromptIdx((i) => (i + 1) % PROMPTS.length), PROMPT_INTERVAL_MS)
+    return () => { clearInterval(w); clearInterval(p) }
   }, [])
 
-  const greeting = useMemo(() => {
-    if (!propertyName) return 'Pick a property to start'
-    return propertyName
-  }, [propertyName])
+  if (!propertyName) {
+    return (
+      <div className="empty-aker">
+        <motion.div
+          className="empty-aker-overline"
+          initial={{ opacity: 0, y: 6 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: 0.4 }}
+        >
+          Property AI
+        </motion.div>
+        <motion.h1
+          className="empty-aker-headline"
+          initial={{ opacity: 0, y: 10 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ delay: 0.05, duration: 0.45 }}
+        >
+          Pick a property to begin.
+        </motion.h1>
+      </div>
+    )
+  }
+
+  // Two-digit counter that follows the cycling prompt index.
+  const seq = String(promptIdx + 1).padStart(2, '0')
 
   return (
-    <div className="empty-hero">
+    <div className="empty-aker">
       <motion.div
-        className="empty-hero-head"
-        variants={fadeUp}
-        initial="hidden"
-        animate="visible"
+        className="empty-aker-overline"
+        initial={{ opacity: 0, y: 6 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ duration: 0.4 }}
       >
-        <div className="empty-hero-eyebrow">
-          <Sparkles size={12} />
-          <span>Property AI</span>
-        </div>
-        <h2>
-          <span className="empty-hero-greet">
-            <Building size={22} aria-hidden="true" />
-            {greeting}
-          </span>
-        </h2>
-        {propertyName && (
-          <p className="empty-hero-sub">
-            Ask about{' '}
-            <span className="rotating-word-slot">
-              <AnimatePresence mode="wait" initial={false}>
-                <motion.span
-                  key={ROTATING_WORDS[wordIndex]}
-                  className="rotating-word"
-                  initial={{ y: 14, opacity: 0 }}
-                  animate={{ y: 0, opacity: 1 }}
-                  exit={{ y: -14, opacity: 0 }}
-                  transition={{ duration: 0.36, ease: 'easeOut' }}
-                >
-                  {ROTATING_WORDS[wordIndex]}
-                </motion.span>
-              </AnimatePresence>
-            </span>
-            {' '}— or pick a card below.
-          </p>
-        )}
+        Property AI · {propertyName}
       </motion.div>
 
-      {propertyName && (
-        <motion.div
-          className="empty-hero-grid"
-          initial="hidden"
-          animate="visible"
+      <motion.h1
+        className="empty-aker-headline"
+        initial={{ opacity: 0, y: 12 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ delay: 0.05, duration: 0.5, ease: 'easeOut' }}
+      >
+        Ask about{' '}
+        <span className="rotating-word-slot">
+          <AnimatePresence mode="wait" initial={false}>
+            <motion.span
+              key={ROTATING_WORDS[wordIdx]}
+              className="rotating-word"
+              initial={{ y: 22, opacity: 0 }}
+              animate={{ y: 0, opacity: 1 }}
+              exit={{ y: -22, opacity: 0 }}
+              transition={{ duration: 0.42, ease: [0.2, 0.65, 0.3, 0.95] }}
+            >
+              {ROTATING_WORDS[wordIdx]}
+            </motion.span>
+          </AnimatePresence>
+        </span>
+        .
+      </motion.h1>
+
+      <motion.div
+        className="empty-aker-sub"
+        initial={{ opacity: 0 }}
+        animate={{ opacity: 1 }}
+        transition={{ delay: 0.25, duration: 0.5 }}
+      >
+        Numbers from the rent roll, photos from the marketing site, charts on
+        request — quiet, scoped to this property.
+      </motion.div>
+
+      <div className="empty-aker-rotator">
+        <motion.span
+          key={seq}
+          className="seq"
+          initial={{ opacity: 0, y: 6 }}
+          animate={{ opacity: 1, y: 0 }}
+          exit={{ opacity: 0 }}
+          transition={{ duration: 0.35 }}
         >
-          {CARDS.map((c, i) => {
-            const Icon = c.icon
-            return (
-              <motion.button
-                key={c.title}
-                type="button"
-                className="empty-card"
-                disabled={disabled}
-                custom={i + 1}
-                variants={fadeUp}
-                whileHover={disabled ? undefined : { y: -2 }}
-                whileTap={disabled ? undefined : { scale: 0.98 }}
-                onClick={() => !disabled && onPick(c.prompt)}
-              >
-                <span className="empty-card-icon">
-                  <Icon size={16} />
-                </span>
-                <span className="empty-card-body">
-                  <span className="empty-card-title">{c.title}</span>
-                  <span className="empty-card-prompt">{c.prompt}</span>
-                </span>
-                <span className="empty-card-hint">{c.hint}</span>
-              </motion.button>
-            )
-          })}
-        </motion.div>
-      )}
+          {seq}
+        </motion.span>
+        <span className="rule" aria-hidden="true" />
+        <div className="rotator-line">
+          <AnimatePresence mode="wait" initial={false}>
+            <motion.span
+              key={PROMPTS[promptIdx]}
+              className="rotator-text"
+              initial={{ opacity: 0, x: 14 }}
+              animate={{ opacity: 1, x: 0 }}
+              exit={{ opacity: 0, x: -14 }}
+              transition={{ duration: 0.45, ease: [0.2, 0.65, 0.3, 0.95] }}
+            >
+              {PROMPTS[promptIdx]}
+            </motion.span>
+          </AnimatePresence>
+        </div>
+      </div>
     </div>
   )
 }

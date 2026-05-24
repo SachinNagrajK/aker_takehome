@@ -911,6 +911,54 @@ def _last_scope_summary_in(messages: list) -> str | None:
     return None
 
 
+def _orphaned_tool_repairs(messages: list) -> list[ToolMessage]:
+    """Build stub ToolMessages for any unresolved tool_calls in conversation history.
+
+    When the user clicks Stop in the UI after the agent emitted an AIMessage
+    with tool_calls but BEFORE the tools node executed, those tool_call_ids
+    have no corresponding ToolMessage. On the next /chat turn the OpenAI
+    Chat Completions API rejects the conversation with:
+
+        BadRequestError 400 — "An assistant message with 'tool_calls' must
+        be followed by tool messages responding to each 'tool_call_id'."
+
+    To stay valid without nuking the conversation, walk back to the most
+    recent AIMessage that has tool_calls and emit a stub ToolMessage for
+    every tool_call_id that doesn't already have a response further down.
+    """
+    if not messages:
+        return []
+    # Locate the most-recent AIMessage that requested tools.
+    last_ai_with_calls = None
+    last_ai_idx = -1
+    for i in range(len(messages) - 1, -1, -1):
+        m = messages[i]
+        if isinstance(m, AIMessage) and getattr(m, "tool_calls", None):
+            last_ai_with_calls = m
+            last_ai_idx = i
+            break
+    if last_ai_with_calls is None:
+        return []
+
+    # Collect every ToolMessage that landed AFTER that AIMessage, keyed by
+    # tool_call_id, so we know which calls have been resolved.
+    answered: set[str] = set()
+    for m in messages[last_ai_idx + 1:]:
+        if isinstance(m, ToolMessage) and m.tool_call_id:
+            answered.add(m.tool_call_id)
+
+    repairs: list[ToolMessage] = []
+    for tc in last_ai_with_calls.tool_calls:
+        tcid = tc.get("id")
+        if tcid and tcid not in answered:
+            repairs.append(ToolMessage(
+                tool_call_id=tcid,
+                name=tc.get("name", "unknown"),
+                content="(cancelled — user stopped generation before this tool ran)",
+            ))
+    return repairs
+
+
 def enter_turn(state: ChatState) -> dict[str, Any]:
     """Open a new conversational turn.
 
@@ -961,6 +1009,11 @@ def enter_turn(state: ChatState) -> dict[str, Any]:
                 "argument (tools default to latest)."
             )
         new_msgs.append(SystemMessage(content="\n".join(refresh_lines)))
+
+    # Repair any orphaned tool_calls left over from a Stop-aborted prior
+    # turn so OpenAI doesn't reject this conversation on submission.
+    new_msgs.extend(_orphaned_tool_repairs(existing))
+
     new_msgs.append(HumanMessage(content=state["user_message"]))
 
     return {

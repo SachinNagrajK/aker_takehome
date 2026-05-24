@@ -783,152 +783,107 @@ select:focus, input:focus, textarea:focus {
   background: var(--accent-soft);
 }
 
-/* ===== Empty state hero (animated suggestion grid) ===== */
+/* ===== Empty state (Aker-style — quiet, serif, motion-only) ===== */
+/* Restrained hero matching akercompanies.com: generous whitespace, no
+   decorative cards, single italic accent word, and a numbered (01/02/03)
+   rotator that cycles example prompts. Nothing is clickable. */
 
-.empty-hero {
-  padding: 56px 24px 24px;
-  max-width: 760px;
+.empty-aker {
+  max-width: 720px;
   margin: 0 auto;
+  padding: 88px 28px 40px;
+  text-align: left;
 }
-.empty-hero-head {
-  text-align: center;
-  margin-bottom: 28px;
-}
-.empty-hero-eyebrow {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
+.empty-aker-overline {
   font-size: 11px;
   font-weight: 600;
-  letter-spacing: 0.12em;
+  letter-spacing: 0.16em;
   text-transform: uppercase;
-  color: var(--accent);
-  padding: 4px 10px;
-  border: 1px solid var(--accent-strong);
-  border-radius: 999px;
-  margin-bottom: 16px;
+  color: var(--muted);
+  margin-bottom: 32px;
 }
-.empty-hero h2 {
+.empty-aker-headline {
   font-family: "Fraunces", "Inter", serif;
-  font-size: 32px;
-  font-weight: 500;
-  letter-spacing: -0.02em;
-  margin: 0 0 14px;
+  font-weight: 400;
+  font-size: clamp(34px, 4.6vw, 52px);
+  line-height: 1.08;
+  letter-spacing: -0.025em;
+  margin: 0 0 24px;
   color: var(--text);
 }
-.empty-hero-greet {
-  display: inline-flex;
-  align-items: center;
-  gap: 12px;
-  color: var(--text);
-}
-.empty-hero-greet svg { color: var(--accent); }
-.empty-hero-sub {
-  font-size: 14.5px;
-  color: var(--text-dim);
-  margin: 0;
-  display: inline-flex;
-  align-items: baseline;
-  gap: 6px;
-  flex-wrap: wrap;
-  justify-content: center;
-}
-.rotating-word-slot {
+.empty-aker-headline .rotating-word-slot {
   position: relative;
   display: inline-block;
-  min-width: 88px;
-  height: 1.25em;
-  vertical-align: bottom;
+  /* Reserve width for the longest expected word so the layout doesn't reflow. */
+  min-width: 6.5ch;
+  height: 1em;
+  vertical-align: baseline;
+  overflow: hidden;
 }
-.rotating-word {
+.empty-aker-headline .rotating-word {
+  position: absolute;
+  left: 0;
+  bottom: 0;
+  white-space: nowrap;
+  font-style: italic;
+  color: var(--accent);
+  font-weight: 500;
+}
+.empty-aker-sub {
+  font-size: 15px;
+  line-height: 1.65;
+  color: var(--text-dim);
+  max-width: 540px;
+  margin: 0 0 56px;
+}
+
+/* Numbered rotator: 01 — example prompt fades through. */
+.empty-aker-rotator {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  align-items: center;
+  gap: 16px;
+  padding-top: 22px;
+  border-top: 1px solid var(--border);
+}
+.empty-aker-rotator .seq {
+  font-family: "JetBrains Mono", ui-monospace, monospace;
+  font-size: 13px;
+  letter-spacing: 0.04em;
+  color: var(--accent);
+  font-weight: 500;
+}
+.empty-aker-rotator .rule {
+  /* The horizontal grid auto-flow makes the gap visible; this is a placeholder
+     for any future inline divider. Currently invisible. */
+  display: none;
+}
+.empty-aker-rotator .rotator-line {
+  position: relative;
+  height: 1.6em;
+  overflow: hidden;
+}
+.empty-aker-rotator .rotator-text {
   position: absolute;
   left: 0;
   top: 0;
-  white-space: nowrap;
-  font-weight: 600;
-  color: var(--accent);
   font-family: "Fraunces", "Inter", serif;
+  font-size: 17px;
+  line-height: 1.5;
   font-style: italic;
-}
-
-.empty-hero-grid {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 12px;
-}
-.empty-card {
-  display: flex;
-  align-items: flex-start;
-  gap: 12px;
-  padding: 14px 16px;
-  background: var(--panel);
-  border: 1px solid var(--border);
-  border-radius: var(--r-md);
-  color: var(--text);
-  text-align: left;
-  cursor: pointer;
-  transition: border-color .18s ease, background .18s ease, box-shadow .18s ease;
-}
-.empty-card:hover:not(:disabled) {
-  border-color: var(--accent);
-  background: var(--bg-elev);
-  box-shadow: var(--shadow-1);
-}
-.empty-card:disabled {
-  cursor: not-allowed;
-  opacity: 0.55;
-}
-.empty-card-icon {
-  flex-shrink: 0;
-  width: 32px;
-  height: 32px;
-  display: grid;
-  place-items: center;
-  border-radius: var(--r-sm);
-  background: var(--accent-soft);
-  color: var(--accent);
-  border: 1px solid var(--accent-strong);
-}
-.empty-card-body {
-  flex: 1;
-  display: flex;
-  flex-direction: column;
-  gap: 3px;
-  min-width: 0;
-}
-.empty-card-title {
-  font-size: 13.5px;
-  font-weight: 600;
   color: var(--text);
   letter-spacing: -0.005em;
-}
-.empty-card-prompt {
-  font-size: 12.5px;
-  color: var(--text-dim);
-  line-height: 1.4;
-  /* clamp at 2 lines so cards stay equal height */
-  display: -webkit-box;
-  -webkit-line-clamp: 2;
-  -webkit-box-orient: vertical;
+  white-space: nowrap;
   overflow: hidden;
-}
-.empty-card-hint {
-  flex-shrink: 0;
-  align-self: flex-start;
-  font-size: 10px;
-  font-weight: 600;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
-  color: var(--muted);
-  padding: 2px 7px;
-  border: 1px solid var(--border);
-  border-radius: 999px;
+  text-overflow: ellipsis;
+  max-width: 100%;
 }
 
 @media (max-width: 640px) {
-  .empty-hero { padding: 40px 14px 16px; }
-  .empty-hero h2 { font-size: 26px; }
-  .empty-hero-grid { grid-template-columns: 1fr; }
+  .empty-aker { padding: 56px 18px 24px; }
+  .empty-aker-headline { font-size: 30px; }
+  .empty-aker-sub { margin-bottom: 36px; }
+  .empty-aker-rotator .rotator-text { font-size: 15px; }
 }
 
 /* ===== Streaming reasoning timeline ===== */
