@@ -160,7 +160,10 @@ select:focus, input:focus, textarea:focus {
 .selector select {
   min-width: 200px;
   font-size: 13px;
-  padding: 7px 10px;
+  /* Match the .property-chips control height exactly so the LLM and
+     Property selectors sit on the same horizontal axis in the topbar. */
+  height: 38px;
+  padding: 0 10px;
 }
 
 .scope-pill {
@@ -190,13 +193,15 @@ select:focus, input:focus, textarea:focus {
   position: relative;
   min-width: 280px;
 }
+/* .property-multi inherits .selector's flex-column + 4px gap, so we don't
+   redefine label spacing here — keeping the rule empty preserves any
+   selector-style tweaks specific to the multi-picker if reintroduced. */
 .property-multi label {
   font-size: 10px;
   color: var(--muted);
   text-transform: uppercase;
   letter-spacing: 0.08em;
   font-weight: 600;
-  margin-bottom: 4px;
 }
 .property-chips {
   display: flex;

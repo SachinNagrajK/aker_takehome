@@ -286,7 +286,7 @@ export default function App() {
       <div className="topbar">
         <div className="brand">
           <span className="brand-icon"><Building2 size={16} /></span>
-          Property AI
+          Aker AI
         </div>
         <PropertySelector
           properties={properties}
