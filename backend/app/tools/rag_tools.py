@@ -16,7 +16,6 @@ from __future__ import annotations
 
 from typing import Any
 
-from ..config import get_settings
 from ..guardrails.scope import require_scope
 
 
@@ -29,27 +28,8 @@ def _to_distance(score: float | None) -> float:
     return float(1.0 - score)
 
 
-# ---------------------------------------------------------------------------
-# Public API — v1 (text-only). Retained as a thin shim around v2 so the
-# graph can still call search_property_active() without a flag check on
-# the v1 path. The actual retrieval is v2-flavoured (Pinecone).
-# ---------------------------------------------------------------------------
-
 DEFAULT_K = 4
 MAX_K = 10
-
-
-def build_context_block(chunks: list[dict[str, Any]]) -> str:
-    """Concat top-k chunks into a single context string for the LLM prompt."""
-    if not chunks:
-        return ""
-    parts = []
-    for i, ch in enumerate(chunks, 1):
-        url = ch.get("url") or ""
-        title = ch.get("page_title") or ""
-        body = (ch.get("text") or "").strip()
-        parts.append(f"[Source {i} — {title}]\n{body}\n(URL: {url})")
-    return "\n\n".join(parts)
 
 
 # ---------------------------------------------------------------------------
@@ -315,30 +295,6 @@ def search_property_v2(
     }
 
 
-def build_context_block_v2(chunks: list[dict[str, Any]]) -> str:
-    """Like build_context_block but flags table/image chunks so the LLM knows."""
-    if not chunks:
-        return ""
-    parts = []
-    for i, ch in enumerate(chunks, 1):
-        url = ch.get("url") or ""
-        title = ch.get("page_title") or ""
-        sect = ch.get("section_path") or ""
-        modality = ch.get("modality", "text")
-        body = (ch.get("text") or "").strip()
-        tag = f"Source {i} — {title}"
-        if sect:
-            tag += f" — {sect}"
-        if modality == "image":
-            cap = ch.get("caption") or ""
-            parts.append(f"[{tag} (IMAGE)]\n{cap}\n(URL: {url})")
-        elif modality == "table":
-            parts.append(f"[{tag} (TABLE)]\n{body}\n(URL: {url})")
-        else:
-            parts.append(f"[{tag}]\n{body}\n(URL: {url})")
-    return "\n\n".join(parts)
-
-
 def search_property_active(
     property_code: str,
     query: str,
@@ -347,21 +303,3 @@ def search_property_active(
 ) -> dict[str, Any]:
     """Dispatch to v2 retrieval. (v1 path retired with the Chroma swap.)"""
     return search_property_v2(property_code, query, k=k, max_images=max_images)
-
-
-def has_content(property_code: str) -> bool:
-    """Cheap check — does this property have any indexed chunks?
-
-    Uses Pinecone's per-namespace stats so we don't pay for a query.
-    """
-    code = require_scope(property_code)
-    try:
-        from ..ingestion.v2.pipeline import get_index_v2
-        index = get_index_v2()
-        stats = index.describe_index_stats()
-        ns = (stats.get("namespaces") or {}).get(code)
-        if not ns:
-            return False
-        return int(ns.get("vector_count", 0)) > 0
-    except Exception:
-        return False

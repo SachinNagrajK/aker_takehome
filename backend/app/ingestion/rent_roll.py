@@ -26,13 +26,11 @@ from __future__ import annotations
 
 import argparse
 import math
-import os
 import re
 import sys
 from dataclasses import dataclass, field
 from datetime import date, datetime
 from pathlib import Path
-from typing import Iterable
 
 import pandas as pd
 from sqlalchemy import delete
@@ -42,7 +40,7 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from app.config import get_settings        # noqa: E402
-from app.db import engine, session_scope   # noqa: E402
+from app.db import session_scope            # noqa: E402
 from app import models                      # noqa: E402
 
 

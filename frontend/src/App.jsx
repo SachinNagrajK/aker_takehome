@@ -12,15 +12,6 @@ function genConversationId() {
   return (crypto?.randomUUID?.() || `${Date.now()}-${Math.random().toString(36).slice(2)}`)
 }
 
-const SUGGESTIONS = [
-  'What is the average rent and occupancy?',
-  'Show me the unit mix breakdown.',
-  'How has the average rent changed over the year?',
-  'Which leases are expiring in the next 90 days?',
-  'Show me the gallery and amenities',
-  'Which units have the highest outstanding balance?',
-]
-
 export default function App() {
   const [properties, setProperties] = useState([])
   const [llms, setLlms] = useState([])
@@ -333,17 +324,6 @@ export default function App() {
                 disabled={busy}
               />
             )}
-
-            {/* Suggestion chips moved into <EmptyState/> hero grid above.
-                Original chip strip preserved below for easy restore:
-                {!pendingClarification && messages.length === 0 && (
-                  <div className="suggestions">
-                    {SUGGESTIONS.map((s) => (
-                      <button key={s} className="chip" disabled={busy}
-                        onClick={() => handleSend(s)}>{s}</button>
-                    ))}
-                  </div>
-                )} */}
 
             <Composer
               disabled={busy || !!pendingClarification}

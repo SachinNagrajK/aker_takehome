@@ -80,11 +80,6 @@ def get_index_v2():
     return _index
 
 
-# Back-compat alias: callers historically said "collection" (Chroma terminology).
-def get_collection_v2():
-    return get_index_v2()
-
-
 def _meta_for_pinecone(d: dict[str, Any], text: str) -> dict[str, Any]:
     """Pinecone metadata: scalars (str/int/float/bool) and list[str] only.
     Drop None, stringify everything else, and store the chunk text under

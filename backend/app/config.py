@@ -48,7 +48,6 @@ class Settings:
 
     # Vector store — Pinecone serverless. Each property is a namespace so
     # retrieval doesn't need a property_code metadata filter.
-    rag_version: str = os.getenv("RAG_VERSION", "v2").lower()
     pinecone_api_key: str | None = os.getenv("PINECONE_API_KEY") or None
     pinecone_index: str = os.getenv("PINECONE_INDEX", "property-chunks-v2")
     pinecone_cloud: str = os.getenv("PINECONE_CLOUD", "aws")

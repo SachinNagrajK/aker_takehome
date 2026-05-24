@@ -52,7 +52,6 @@ from ..guardrails.scope import (
     ScopeDecision,
     UnknownPropertyError,
     resolve_scope,
-    system_prompt,
     validate_property_code,
 )
 from ..tools.sql_tools import TOOLS as SQL_TOOLS
@@ -344,7 +343,69 @@ def _build_tools(scope: ScopeDecision):
 
     @tool
     def execute_scoped_sql(sql: str) -> dict:
-        """BACKSTOP — run a custom read-only SELECT against the rent-roll DB. Use when no curated tool fits a complex multi-condition question. Tables: properties, units, leases, rent_snapshots, rent_charge_lines. Property scope is auto-injected (all codes in scope); do NOT add property_code filters yourself. Validated by sqlglot and executed as a read-only DB user."""
+        """BACKSTOP — run a custom read-only Postgres SELECT against the rent-roll DB. Use when no curated tool fits a complex multi-condition question. Property scope is auto-injected; do NOT add property_code filters yourself. Validated by sqlglot and executed as a read-only DB user.
+
+SCHEMA (use these EXACT column names — do NOT invent columns):
+
+  properties(
+    property_code TEXT PK,
+    property_name TEXT,
+    property_type TEXT,  -- 'residential' | 'affordable' | 'commercial' | 'land' | etc.
+    address TEXT
+  )
+
+  units(
+    id INT PK,
+    property_code TEXT FK,
+    unit_number TEXT,
+    unit_type TEXT,
+    bedrooms FLOAT,
+    bathrooms FLOAT,
+    sqft FLOAT,
+    market_rent FLOAT
+  )
+
+  leases(
+    id INT PK,
+    property_code TEXT FK,
+    unit_number TEXT,
+    tenant_id TEXT,
+    lease_start DATE,
+    lease_end DATE,
+    monthly_rent FLOAT,    -- NOT `rent`; do not use `rent`
+    balance FLOAT,         -- outstanding balance, latest snapshot only
+    status TEXT,           -- 'current' | 'notice' | 'vacant' etc.
+    resident_deposit FLOAT,
+    other_deposit FLOAT,
+    move_out_date DATE
+  )
+
+  rent_snapshots(
+    id INT PK,
+    property_code TEXT FK,
+    snapshot_month DATE,   -- always the 1st of the month
+    unit_number TEXT,
+    monthly_rent FLOAT,
+    occupied BOOLEAN,
+    raw_row JSONB          -- per-unit raw row; access historical balance via (raw_row->>'balance')::numeric
+  )                        -- NOTE: no `balance` column here; use raw_row JSONB
+
+  rent_charge_lines(
+    id INT PK,
+    snapshot_id INT FK,
+    property_code TEXT FK,
+    snapshot_month DATE,
+    unit_number TEXT,
+    line_index INT,
+    charge_code TEXT,      -- 'RENT' | 'PARKING' | 'PET' | 'AMENITY' | 'TRASH' | 'CONRENT' | …
+    amount FLOAT
+  )
+
+Common gotchas:
+  - For per-unit FEES (parking, pet, amenity, trash) use rent_charge_lines, NOT leases.
+  - For historical balance use rent_snapshots.raw_row->>'balance', NOT a `balance` column.
+  - For latest balance use leases.balance.
+  - There is no `rent` column anywhere — it's `monthly_rent` on leases / rent_snapshots."""
         return SQL_TOOLS["execute_scoped_sql"]["fn"](scope_codes, sql)
 
     @tool

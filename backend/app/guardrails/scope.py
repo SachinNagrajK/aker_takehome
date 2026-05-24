@@ -13,8 +13,6 @@ of the helpers here. The contract:
   request.
 - `require_scope(code)` is a runtime assertion every tool calls as its first
   line — if a tool ever ends up with an empty code, this fails loudly.
-- `system_prompt(code, name)` produces the templated system prompt that pins
-  the LLM to a single property.
 """
 from __future__ import annotations
 
@@ -69,28 +67,6 @@ def validate_property_code(property_code: str) -> tuple[str, str]:
     if row is None:
         raise UnknownPropertyError(f"Unknown property_code: {property_code!r}")
     return row[0], row[1]
-
-
-SYSTEM_PROMPT_TEMPLATE = """\
-You are a property-management AI assistant. Answer ONLY about the property
-identified by code "{code}" — known as "{name}".
-
-Hard rules:
-  1. Never mention or reference any other property in the portfolio.
-  2. If the data needed to answer is unavailable for THIS property, say so
-     explicitly. Do not guess, infer, or borrow from training data.
-  3. The tools you can call already enforce a property_code = "{code}" filter
-     at the SQL and vector-store level. Trust their output.
-  4. Format your answer in Markdown. When numeric data is involved, also
-     surface UI components (KPI cards, tables, charts) so the user gets
-     both a narrative and structured view.
-
-The user is operating in a single-property session. Stay scoped."""
-
-
-def system_prompt(property_code: str, property_name: str) -> str:
-    code = require_scope(property_code)
-    return SYSTEM_PROMPT_TEMPLATE.format(code=code, name=property_name)
 
 
 # ---------------------------------------------------------------------------

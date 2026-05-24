@@ -20,7 +20,7 @@ from __future__ import annotations
 from datetime import date, datetime
 from typing import Any
 
-from sqlalchemy import text
+from sqlalchemy import bindparam, text
 
 from ..db import session_scope
 from ..guardrails.scope import require_scope
@@ -694,9 +694,7 @@ def compare_units(
                   ON l.property_code = u.property_code AND l.unit_number = u.unit_number
                 WHERE u.property_code = :code
                   AND u.unit_number IN :units
-            """).bindparams(
-                __import__("sqlalchemy").bindparam("units", expanding=True)
-            ),
+            """).bindparams(bindparam("units", expanding=True)),
             {"code": code, "units": list(unit_numbers)},
         ))
 
@@ -978,13 +976,3 @@ TOOLS: dict[str, dict[str, Any]] = {
 def _lazy_execute_scoped_sql(property_codes, sql):
     from .sql_executor import execute_scoped_sql
     return execute_scoped_sql(property_codes, sql)
-
-
-# NOTE: A legacy `run_tool()` string-keyed dispatcher used to live here.
-# It was v1's hand-rolled router back when the LLM emitted JSON like
-# `{"tool": "name", "args": {...}}`. v2 switched to native OpenAI
-# tool-calling via `ChatOpenAI.bind_tools()`, which dispatches directly
-# inside the `tools` graph node — `run_tool()` had zero callers and was
-# removed in v3. The `TOOLS` registry above is still used by graph/nodes.py
-# (`SQL_TOOLS` import) for `is this tool name a SQL tool?` lookups in
-# `_route_label`, so the dict stays.

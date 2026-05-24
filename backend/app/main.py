@@ -17,7 +17,10 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import uuid
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
@@ -38,13 +41,19 @@ from .graph.build import run_chat, run_chat_stream
 log = logging.getLogger("property_ai")
 settings = get_settings()
 
-app = FastAPI(title="Property-Specific AI Assistant", version="0.1.0")
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    init_db()
+    yield
+
+
+app = FastAPI(title="Property-Specific AI Assistant", version="0.1.0", lifespan=lifespan)
 
 # CORS — comma-separated list of origins via CORS_ORIGINS env var. Default
 # is `*` for local dev. In production set it to the Vercel domain, e.g.
 # `https://aker-property-ai.vercel.app`.
-import os as _os
-_cors_origins_raw = _os.getenv("CORS_ORIGINS", "*").strip()
+_cors_origins_raw = os.getenv("CORS_ORIGINS", "*").strip()
 _cors_origins = [o.strip() for o in _cors_origins_raw.split(",") if o.strip()] or ["*"]
 _allow_credentials = _cors_origins != ["*"]  # spec forbids credentials with wildcard
 app.add_middleware(
@@ -58,11 +67,6 @@ app.add_middleware(
 # Image/table artifacts live in Supabase Storage (public bucket). The
 # frontend loads them directly via the fully-qualified Supabase URL that
 # rag_tools returns — no static mount needed here.
-
-
-@app.on_event("startup")
-def _startup() -> None:
-    init_db()
 
 
 # ---------------------------------------------------------------------------
