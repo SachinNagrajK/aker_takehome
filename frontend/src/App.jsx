@@ -6,6 +6,7 @@ import LLMSelector from './components/LLMSelector.jsx'
 import Composer from './components/Composer.jsx'
 import Message from './components/Message.jsx'
 import ClarificationCard from './components/ClarificationCard.jsx'
+import EmptyState from './components/EmptyState.jsx'
 
 function genConversationId() {
   return (crypto?.randomUUID?.() || `${Date.now()}-${Math.random().toString(36).slice(2)}`)
@@ -33,6 +34,9 @@ export default function App() {
   const [busy, setBusy] = useState(false)
   const [bootError, setBootError] = useState(null)
   const scrollRef = useRef(null)
+  // AbortController for the in-flight chat stream — lets the user click the
+  // composer's Stop button (rendered when busy=true) to cancel generation.
+  const abortRef = useRef(null)
 
   useEffect(() => {
     (async () => {
@@ -73,8 +77,19 @@ export default function App() {
   // Stream a single chat turn. Reasoning lines accumulate in the assistant
   // message's `progress` array while tokens fill `content`. When `done`
   // fires we replace the streaming bubble with the final structured response.
+  function handleStop() {
+    // Abort the in-flight fetch — the catch block in streamChat handles the
+    // AbortError quietly and finalises the streaming bubble as "stopped".
+    if (abortRef.current) {
+      try { abortRef.current.abort() } catch { /* noop */ }
+    }
+  }
+
   async function streamChat(payload) {
     setBusy(true)
+    // Fresh AbortController per turn so previous aborts don't bleed into new ones.
+    const controller = new AbortController()
+    abortRef.current = controller
     // Append a streaming-placeholder assistant message; we'll mutate it in place.
     setMessages((m) => [
       ...m,
@@ -108,6 +123,7 @@ export default function App() {
 
     try {
       await api.chatStream(payload, {
+        signal: controller.signal,
         onEvent: (evt) => {
           switch (evt.type) {
             case 'open':
@@ -198,9 +214,29 @@ export default function App() {
         },
       })
     } catch (e) {
-      setBubbleError(e.message)
+      // User clicked Stop → finalise whatever streamed and add a "stopped"
+      // marker. AbortError can surface under a few different names depending
+      // on the fetch implementation; check all common ones.
+      const aborted = e?.name === 'AbortError' || e?.code === 20 ||
+                      controller.signal.aborted
+      if (aborted) {
+        updateLast((b) => ({
+          role: 'assistant',
+          content: b.content || '_(stopped)_',
+          meta: {
+            ...(b.meta || {}),
+            stopped: true,
+            progress: (b.progress || []).map((p) =>
+              p.status === 'running' ? { ...p, status: 'stopped' } : p
+            ),
+          },
+        }))
+      } else {
+        setBubbleError(e.message)
+      }
     } finally {
       setBusy(false)
+      abortRef.current = null
     }
   }
 
@@ -281,20 +317,11 @@ export default function App() {
           <div className="messages" ref={scrollRef}>
             <div className="messages-inner">
               {messages.length === 0 && (
-                <div className="empty-state">
-                  <h2>
-                    {propertyCodes.length === 0
-                      ? 'Pick a property to start'
-                      : propertyCodes.length === 1
-                        ? `Ask anything about ${activeProperty?.property_name || '…'}`
-                        : `Comparing ${propertyCodes.length} properties`}
-                  </h2>
-                  <p>
-                    {propertyCodes.length > 1
-                      ? 'Ask "compare avg rent" or "show units under $2000 across all" — answers stay in this chat with charts and photos inline.'
-                      : 'Try a question below or type your own — answers include charts, tables, and photos right in the conversation.'}
-                  </p>
-                </div>
+                <EmptyState
+                  propertyName={activeProperty?.property_name || null}
+                  disabled={busy || !llm}
+                  onPick={handleSend}
+                />
               )}
               {messages.map((msg, i) => <Message key={i} msg={msg} />)}
             </div>
@@ -309,22 +336,23 @@ export default function App() {
               />
             )}
 
-            {!pendingClarification && messages.length === 0 && (
-              <div className="suggestions">
-                {SUGGESTIONS.map((s) => (
-                  <button
-                    key={s}
-                    className="chip"
-                    disabled={busy}
-                    onClick={() => handleSend(s)}
-                  >
-                    {s}
-                  </button>
-                ))}
-              </div>
-            )}
+            {/* Suggestion chips moved into <EmptyState/> hero grid above.
+                Original chip strip preserved below for easy restore:
+                {!pendingClarification && messages.length === 0 && (
+                  <div className="suggestions">
+                    {SUGGESTIONS.map((s) => (
+                      <button key={s} className="chip" disabled={busy}
+                        onClick={() => handleSend(s)}>{s}</button>
+                    ))}
+                  </div>
+                )} */}
 
-            <Composer disabled={busy || !!pendingClarification} onSend={handleSend} />
+            <Composer
+              disabled={busy || !!pendingClarification}
+              busy={busy}
+              onSend={handleSend}
+              onStop={handleStop}
+            />
           </div>
         </div>
       </div>

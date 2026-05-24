@@ -225,7 +225,7 @@ export default function Message({ msg }) {
           <ReactMarkdown remarkPlugins={[remarkGfm]}>{msg.content || ''}</ReactMarkdown>
         </div>
 
-        {(images.length > 0 || otherComponents.length > 0 || (msg.meta?.sources?.length > 0) || (msg.meta?.tool_trace?.length > 0)) && (
+        {(images.length > 0 || otherComponents.length > 0 || (msg.meta?.sources?.length > 0)) && (
           <div className="msg-components">
             {otherComponents.map((c, i) => (
               <ComponentRenderer key={i} component={c} />
@@ -234,9 +234,13 @@ export default function Message({ msg }) {
             {msg.meta?.sources?.length > 0 && (
               <SourcesStrip sources={msg.meta.sources} />
             )}
-            {msg.meta?.tool_trace?.length > 0 && (
-              <ToolTrace steps={msg.meta.tool_trace} />
-            )}
+            {/* DISABLED — agent trace hidden from end users. Restore by
+                uncommenting both the block below AND the
+                `msg.meta?.tool_trace?.length > 0` clause in the
+                surrounding conditional above.
+                {msg.meta?.tool_trace?.length > 0 && (
+                  <ToolTrace steps={msg.meta.tool_trace} />
+                )} */}
           </div>
         )}
 
