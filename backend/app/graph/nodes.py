@@ -303,14 +303,21 @@ def _build_tools(scope: ScopeDecision):
             c, unit_numbers=unit_numbers, dimensions=dimensions
         )
 
-    @tool
-    def compare_properties(dimension: str = "avg_rent", month: str | None = None) -> dict:
-        """Aggregate one metric across the active comparison property codes. Use when the user asks to compare 2+ PROPERTIES on a metric (e.g. '115r vs 126r avg rent'). dimension: avg_rent | occupancy_pct | total_units | occupied_units | rent_roll_total."""
-        if scope.kind != "compare":
-            return {"error": "compare_properties requires 2+ property codes in scope. Add more via the Property dropdown."}
-        return SQL_TOOLS["compare_properties"]["fn"](
-            property_codes=scope.codes, dimension=dimension, month=month
-        )
+    # --- DISABLED: cross-property comparison ---------------------------------
+    # The property-vs-property comparison feature is out of scope for the
+    # current assignment. The agent should only operate on a single property
+    # at a time. Restore by uncommenting this @tool block AND its entry in
+    # the returned tool list below (search for "compare_properties").
+    #
+    # @tool
+    # def compare_properties(dimension: str = "avg_rent", month: str | None = None) -> dict:
+    #     """Aggregate one metric across the active comparison property codes. Use when the user asks to compare 2+ PROPERTIES on a metric (e.g. '115r vs 126r avg rent'). dimension: avg_rent | occupancy_pct | total_units | occupied_units | rent_roll_total."""
+    #     if scope.kind != "compare":
+    #         return {"error": "compare_properties requires 2+ property codes in scope. Add more via the Property dropdown."}
+    #     return SQL_TOOLS["compare_properties"]["fn"](
+    #         property_codes=scope.codes, dimension=dimension, month=month
+    #     )
+    # -------------------------------------------------------------------------
 
     @tool
     def list_units(
@@ -418,7 +425,8 @@ def _build_tools(scope: ScopeDecision):
     tool_list = [
         get_property_summary, get_unit_mix, get_occupancy, get_rent_trend,
         get_expiring_leases, get_top_balances, get_lease_deposits, get_move_outs,
-        get_unit_charges, compare_units, compare_properties, list_units,
+        get_unit_charges, compare_units, list_units,
+        # compare_properties,  # DISABLED — cross-property compare removed (see @tool block above)
         execute_scoped_sql, search_property_pages, render_chart,
     ]
     return tool_list, {t.name: t for t in tool_list}
@@ -483,19 +491,25 @@ def _build_system_prompt(state: ChatState) -> str:
     )
     if scope.get("kind") == "single" and state.get("property_name"):
         base += f"Active property name: {state['property_name']}.\n"
-    if scope.get("kind") == "compare":
-        codes = scope.get("codes") or []
-        base += (
-            f"Compare mode is active across {len(codes)} properties: {', '.join(codes)}.\n"
-            f"  - Single-property tools (list_units, get_property_summary, get_unit_mix, get_occupancy,\n"
-            f"    get_rent_trend, get_expiring_leases, get_top_balances, get_unit_charges,\n"
-            f"    compare_units, search_property_pages) accept an optional `property_code` arg.\n"
-            f"  - When the user asks about ONE of the compare codes, pass property_code=<that_code>.\n"
-            f"  - When the user asks to compare 'across all' or names two codes, CALL THE TOOL "
-            f"ONCE PER property_code in scope (e.g. list_units(max_rent=2000, property_code='115r') "
-            f"AND list_units(max_rent=2000, property_code='134r') in the SAME turn — emit BOTH tool calls in parallel).\n"
-            f"  - For a single aggregate metric across all properties, use compare_properties.\n"
-        )
+    # DISABLED: cross-property compare mode (kept commented out so the code is
+    # easy to restore by uncommenting). The frontend no longer lets users
+    # select multiple properties, so scope.kind == "compare" should not occur
+    # via the UI path. Free-text "compare 115r and 134r" requests via the
+    # clarify dropdown are still parsed by guardrails/scope.py but will leave
+    # the agent without a compare_properties tool — it'll respond per-property.
+    # if scope.get("kind") == "compare":
+    #     codes = scope.get("codes") or []
+    #     base += (
+    #         f"Compare mode is active across {len(codes)} properties: {', '.join(codes)}.\n"
+    #         f"  - Single-property tools (list_units, get_property_summary, get_unit_mix, get_occupancy,\n"
+    #         f"    get_rent_trend, get_expiring_leases, get_top_balances, get_unit_charges,\n"
+    #         f"    compare_units, search_property_pages) accept an optional `property_code` arg.\n"
+    #         f"  - When the user asks about ONE of the compare codes, pass property_code=<that_code>.\n"
+    #         f"  - When the user asks to compare 'across all' or names two codes, CALL THE TOOL "
+    #         f"ONCE PER property_code in scope (e.g. list_units(max_rent=2000, property_code='115r') "
+    #         f"AND list_units(max_rent=2000, property_code='134r') in the SAME turn — emit BOTH tool calls in parallel).\n"
+    #         f"  - For a single aggregate metric across all properties, use compare_properties.\n"
+    #     )
 
     # Time-scope: the user already told us (or was asked) "as of which month".
     tk = (time_scope or {}).get("kind")
@@ -506,7 +520,7 @@ def _build_system_prompt(state: ChatState) -> str:
             f"\nTime scope: {tl} (snapshot_month='{tm}').\n"
             f"  - Pass snapshot_month='{tm}' to EVERY tool call that accepts it "
             f"(get_property_summary, get_top_balances, get_lease_deposits, "
-            f"get_occupancy, get_unit_charges, get_rent_trend, compare_properties).\n"
+            f"get_occupancy, get_unit_charges, get_rent_trend).\n"
             f"  - For tools without a snapshot_month arg (list_units, compare_units, "
             f"get_unit_mix, get_expiring_leases, get_move_outs), use "
             f"execute_scoped_sql against rent_snapshots with snapshot_month='{tm}'.\n"
@@ -530,7 +544,8 @@ def _build_system_prompt(state: ChatState) -> str:
         "\nTool selection guide (use the MOST specific):\n"
         "  - Specific unit fees / charges ('parking for A103')      → get_unit_charges\n"
         "  - Compare 2+ units in same property                       → compare_units\n"
-        "  - Compare 2+ properties on a metric                       → compare_properties\n"
+        # DISABLED: cross-property compare removed.
+        # "  - Compare 2+ properties on a metric                       → compare_properties\n"
         "  - 'average rent / occupancy / summary'                    → get_property_summary\n"
         "  - Unit-type breakdown                                     → get_unit_mix\n"
         "  - Monthly trend / over the year                           → get_rent_trend\n"

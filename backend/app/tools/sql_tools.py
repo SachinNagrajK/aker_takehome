@@ -723,80 +723,83 @@ def compare_units(
 
 
 # ---------------------------------------------------------------------------
-# 9. Compare properties (cross-property aggregate)
+# 9. Compare properties (cross-property aggregate) — DISABLED
 # ---------------------------------------------------------------------------
-
-_COMPARE_PROPERTY_DIMS = {
-    "avg_rent": "AVG(CASE WHEN monthly_rent > 0 THEN monthly_rent END)",
-    "total_units": "COUNT(*)",
-    "occupied_units": "SUM(CASE WHEN occupied THEN 1 ELSE 0 END)",
-    "occupancy_pct": (
-        "ROUND(100.0 * SUM(CASE WHEN occupied THEN 1 ELSE 0 END) / NULLIF(COUNT(*),0), 1)"
-    ),
-    "rent_roll_total": "SUM(CASE WHEN monthly_rent > 0 THEN monthly_rent END)",
-}
-
-
-def compare_properties(
-    property_codes: list[str],
-    dimension: str = "avg_rent",
-    month: str | None = None,
-) -> dict[str, Any]:
-    """Aggregate one dimension across multiple properties.
-
-    Scope is the *list* of codes — every one is validated by require_scope.
-    Defaults to the latest month per property.
-    """
-    if not property_codes or len(property_codes) < 2:
-        return {"error": "compare_properties requires at least 2 property_codes"}
-    codes = [require_scope(c) for c in property_codes]
-    dim = (dimension or "avg_rent").lower()
-    if dim not in _COMPARE_PROPERTY_DIMS:
-        return {
-            "error": f"Unknown dimension: {dim}. Valid: {list(_COMPARE_PROPERTY_DIMS)}",
-        }
-    agg_expr = _COMPARE_PROPERTY_DIMS[dim]
-
-    # Resolve target month per code (latest if unspecified).
-    with session_scope() as s:
-        results = []
-        for code in codes:
-            if month:
-                try:
-                    y, m = month.split("-")[:2]
-                    month_date = date(int(y), int(m), 1)
-                except (ValueError, AttributeError):
-                    return {"error": f"Invalid month: {month!r}"}
-            else:
-                month_date = s.execute(
-                    text("SELECT MAX(snapshot_month) FROM rent_snapshots WHERE property_code = :c"),
-                    {"c": code},
-                ).scalar()
-
-            if month_date is None:
-                results.append({"property_code": code, "month": None, "value": None, "note": "no snapshots"})
-                continue
-
-            v = s.execute(
-                text(f"""
-                    SELECT {agg_expr} AS value
-                    FROM rent_snapshots
-                    WHERE property_code = :c AND snapshot_month = :m
-                """),
-                {"c": code, "m": month_date},
-            ).scalar()
-            results.append({
-                "property_code": code,
-                "month": month_date.isoformat(),
-                "value": float(v) if v is not None else None,
-            })
-
-    return {
-        "property_codes": codes,
-        "dimension": dim,
-        "month": month,
-        "results": results,
-    }
+# Cross-property comparison is out of scope for the current assignment.
+# Kept as a comment block so the implementation can be restored quickly by
+# uncommenting + re-registering in TOOLS below and the agent's tool list.
+#
+# _COMPARE_PROPERTY_DIMS = {
+#     "avg_rent": "AVG(CASE WHEN monthly_rent > 0 THEN monthly_rent END)",
+#     "total_units": "COUNT(*)",
+#     "occupied_units": "SUM(CASE WHEN occupied THEN 1 ELSE 0 END)",
+#     "occupancy_pct": (
+#         "ROUND(100.0 * SUM(CASE WHEN occupied THEN 1 ELSE 0 END) / NULLIF(COUNT(*),0), 1)"
+#     ),
+#     "rent_roll_total": "SUM(CASE WHEN monthly_rent > 0 THEN monthly_rent END)",
+# }
+#
+#
+# def compare_properties(
+#     property_codes: list[str],
+#     dimension: str = "avg_rent",
+#     month: str | None = None,
+# ) -> dict[str, Any]:
+#     """Aggregate one dimension across multiple properties.
+#
+#     Scope is the *list* of codes — every one is validated by require_scope.
+#     Defaults to the latest month per property.
+#     """
+#     if not property_codes or len(property_codes) < 2:
+#         return {"error": "compare_properties requires at least 2 property_codes"}
+#     codes = [require_scope(c) for c in property_codes]
+#     dim = (dimension or "avg_rent").lower()
+#     if dim not in _COMPARE_PROPERTY_DIMS:
+#         return {
+#             "error": f"Unknown dimension: {dim}. Valid: {list(_COMPARE_PROPERTY_DIMS)}",
+#         }
+#     agg_expr = _COMPARE_PROPERTY_DIMS[dim]
+#
+#     # Resolve target month per code (latest if unspecified).
+#     with session_scope() as s:
+#         results = []
+#         for code in codes:
+#             if month:
+#                 try:
+#                     y, m = month.split("-")[:2]
+#                     month_date = date(int(y), int(m), 1)
+#                 except (ValueError, AttributeError):
+#                     return {"error": f"Invalid month: {month!r}"}
+#             else:
+#                 month_date = s.execute(
+#                     text("SELECT MAX(snapshot_month) FROM rent_snapshots WHERE property_code = :c"),
+#                     {"c": code},
+#                 ).scalar()
+#
+#             if month_date is None:
+#                 results.append({"property_code": code, "month": None, "value": None, "note": "no snapshots"})
+#                 continue
+#
+#             v = s.execute(
+#                 text(f"""
+#                     SELECT {agg_expr} AS value
+#                     FROM rent_snapshots
+#                     WHERE property_code = :c AND snapshot_month = :m
+#                 """),
+#                 {"c": code, "m": month_date},
+#             ).scalar()
+#             results.append({
+#                 "property_code": code,
+#                 "month": month_date.isoformat(),
+#                 "value": float(v) if v is not None else None,
+#             })
+#
+#     return {
+#         "property_codes": codes,
+#         "dimension": dim,
+#         "month": month,
+#         "results": results,
+#     }
 
 
 # ---------------------------------------------------------------------------
@@ -936,14 +939,16 @@ TOOLS: dict[str, dict[str, Any]] = {
         ),
         "params": ["unit_numbers (list)", "dimensions (list, optional)"],
     },
-    "compare_properties": {
-        "fn": compare_properties,
-        "description": (
-            "Aggregate one metric across 2+ properties. dimension is one of "
-            "avg_rent/total_units/occupied_units/occupancy_pct/rent_roll_total."
-        ),
-        "params": ["property_codes (list)", "dimension", "month?"],
-    },
+    # DISABLED: cross-property comparison removed. Restore by uncommenting
+    # the compare_properties function above AND this registry entry.
+    # "compare_properties": {
+    #     "fn": compare_properties,
+    #     "description": (
+    #         "Aggregate one metric across 2+ properties. dimension is one of "
+    #         "avg_rent/total_units/occupied_units/occupancy_pct/rent_roll_total."
+    #     ),
+    #     "params": ["property_codes (list)", "dimension", "month?"],
+    # },
     "list_units": {
         "fn": list_units,
         "description": (

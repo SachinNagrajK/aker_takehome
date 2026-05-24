@@ -51,7 +51,7 @@ _TOOL_REASONING = {
     "get_top_balances":       "Ranking outstanding balances",
     "get_unit_charges":       "Itemising charges for unit",
     "compare_units":          "Comparing units side by side",
-    "compare_properties":     "Comparing properties",
+    # "compare_properties":     "Comparing properties",  # DISABLED
     "list_units":             "Filtering units",
     "execute_scoped_sql":     "Running a custom SQL query",
     "search_property_pages":  "Searching marketing pages & photos",

@@ -1,10 +1,13 @@
-// Multi-select property picker. Chips show currently active codes —
-// click × to remove. Picking 2+ properties puts the scope into compare mode.
+// Single-select property picker. (Originally multi-select for cross-property
+// compare mode — that feature was removed from this assignment, so the
+// picker now always holds at most ONE property code. The multi-select code
+// paths below are intentionally left as dead code rather than deleted so the
+// feature can be restored cleanly.)
 import { useState, useRef, useEffect } from 'react'
 import { X, Plus, Building2 } from 'lucide-react'
 
 export default function PropertySelector({ properties, value, onChange }) {
-  // `value` is a string[] of currently selected property codes.
+  // `value` is a string[] of currently selected property codes (length 0 or 1).
   const codes = Array.isArray(value) ? value : (value ? [value] : [])
   const [open, setOpen] = useState(false)
   const [filter, setFilter] = useState('')
@@ -21,8 +24,11 @@ export default function PropertySelector({ properties, value, onChange }) {
     return () => document.removeEventListener('mousedown', onDoc)
   }, [])
 
+  // Single-select: any pick REPLACES the current selection.
+  // (Original multi-select behaviour preserved as a comment for easy restore:
+  //   if (!codes.includes(code)) onChange([...codes, code]) )
   function add(code) {
-    if (!codes.includes(code)) onChange([...codes, code])
+    onChange([code])
     setOpen(false)
     setFilter('')
   }
@@ -44,7 +50,9 @@ export default function PropertySelector({ properties, value, onChange }) {
   return (
     <div className="selector property-multi" ref={wrapperRef}>
       <label>
-        Property{codes.length > 1 ? ` · compare ${codes.length}` : ''}
+        Property
+        {/* Original multi-select label:
+            Property{codes.length > 1 ? ` · compare ${codes.length}` : ''} */}
       </label>
       <div className="property-chips">
         {codes.map((c) => {

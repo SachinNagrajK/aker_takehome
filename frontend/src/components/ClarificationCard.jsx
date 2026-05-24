@@ -58,8 +58,13 @@ export default function ClarificationCard({ clarification, onReply, disabled }) 
           type="text"
           placeholder={
             options.length > 0
-              ? 'Or type your own — multiple codes welcome (e.g. "compare 115r and 134r")'
-              : 'Type a property code or "compare X and Y"…'
+              ? 'Or type a property code (e.g. "115r")'
+              : 'Type a property code…'
+            /* Original (multi-property hint, restore if cross-property compare is brought back):
+                  options.length > 0
+                    ? 'Or type your own — multiple codes welcome (e.g. "compare 115r and 134r")'
+                    : 'Type a property code or "compare X and Y"…'
+            */
           }
           value={freeform}
           onChange={(e) => setFreeform(e.target.value)}

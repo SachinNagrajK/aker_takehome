@@ -162,24 +162,26 @@ def from_compare_units(r: dict[str, Any]) -> list[dict]:
     }]
 
 
-def from_compare_properties(r: dict[str, Any]) -> list[dict]:
-    """Grouped bar chart for cross-property aggregate."""
-    results = r.get("results") or []
-    if not results:
-        return []
-    dim = r.get("dimension") or "value"
-    chart_rows = [{
-        "dimension": dim,
-        **{res["property_code"]: res.get("value") for res in results},
-    }]
-    return [{
-        "type": "comparison_chart",
-        "title": f"Property Comparison · {dim}",
-        "data": {
-            "categories": [res["property_code"] for res in results],
-            "rows": chart_rows,
-        },
-    }]
+# DISABLED: cross-property comparison removed. Restore by uncommenting
+# AND its entry in the dispatcher map below (search "compare_properties").
+# def from_compare_properties(r: dict[str, Any]) -> list[dict]:
+#     """Grouped bar chart for cross-property aggregate."""
+#     results = r.get("results") or []
+#     if not results:
+#         return []
+#     dim = r.get("dimension") or "value"
+#     chart_rows = [{
+#         "dimension": dim,
+#         **{res["property_code"]: res.get("value") for res in results},
+#     }]
+#     return [{
+#         "type": "comparison_chart",
+#         "title": f"Property Comparison · {dim}",
+#         "data": {
+#             "categories": [res["property_code"] for res in results],
+#             "rows": chart_rows,
+#         },
+#     }]
 
 
 def from_unit_charges(r: dict[str, Any]) -> list[dict]:
@@ -273,7 +275,7 @@ BUILDERS = {
     # v2 additions
     "get_unit_charges":     from_unit_charges,
     "compare_units":        from_compare_units,
-    "compare_properties":   from_compare_properties,
+    # "compare_properties":   from_compare_properties,  # DISABLED
     "list_units":           from_list_units,
 }
 
