@@ -72,14 +72,34 @@ def _is_select_only(tree: exp.Expression) -> None:
             )
 
 
+def _cte_names(tree: exp.Expression) -> set[str]:
+    """Names introduced by WITH … AS (…) at any level of the query.
+
+    These are local aliases, not real tables, so they must NOT be checked
+    against the table allowlist. Without this carve-out, any CTE-using
+    query (e.g. `WITH amenity AS (...)`) would be rejected.
+    """
+    names: set[str] = set()
+    for cte in tree.find_all(exp.CTE):
+        alias = cte.alias_or_name
+        if alias:
+            names.add(alias.lower())
+    return names
+
+
 def _collect_tables(tree: exp.Expression) -> list[exp.Table]:
     return [t for t in tree.find_all(exp.Table)]
 
 
-def _check_table_allowlist(tables: list[exp.Table]) -> list[str]:
+def _check_table_allowlist(tables: list[exp.Table], cte_aliases: set[str] | None = None) -> list[str]:
+    cte_aliases = cte_aliases or set()
     names: list[str] = []
     for t in tables:
         name = t.name.lower()
+        # CTE references look like Table nodes in sqlglot but aren't real
+        # tables — skip the allowlist check for them.
+        if name in cte_aliases:
+            continue
         if name not in ALLOWED_TABLES:
             raise SqlValidationError(
                 f"Table {name!r} is not allowed. Allowed: {sorted(ALLOWED_TABLES)}."
@@ -198,10 +218,11 @@ def validate_and_rewrite(
         raise SqlValidationError("Empty parse result.")
 
     _is_select_only(tree)
+    cte_aliases = _cte_names(tree)
     tables = _collect_tables(tree)
     if not tables:
         raise SqlValidationError("No table references found in query.")
-    table_names = _check_table_allowlist(tables)
+    table_names = _check_table_allowlist(tables, cte_aliases=cte_aliases)
     _check_no_scope_widening(tree, allowed_codes)
     injected = _ensure_scope_filter(tree, allowed_codes)
     limit_added = _ensure_limit(tree)

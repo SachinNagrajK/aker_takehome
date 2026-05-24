@@ -405,7 +405,49 @@ Common gotchas:
   - For per-unit FEES (parking, pet, amenity, trash) use rent_charge_lines, NOT leases.
   - For historical balance use rent_snapshots.raw_row->>'balance', NOT a `balance` column.
   - For latest balance use leases.balance.
-  - There is no `rent` column anywhere — it's `monthly_rent` on leases / rent_snapshots."""
+  - There is no `rent` column anywhere — it's `monthly_rent` on leases / rent_snapshots.
+  - DO NOT join leases directly to rent_charge_lines and then LIMIT — leases
+    has one row per unit but rent_charge_lines has MANY rows per unit (one
+    per charge_code per month). A naive JOIN explodes; LIMIT 2 then returns
+    the same unit twice. Always aggregate rent_charge_lines first.
+
+Worked patterns (copy these idioms verbatim when applicable):
+
+  -- Compare N distinct units on rent + move-out + a specific fee.
+  -- The fee subquery aggregates rent_charge_lines to ONE row per unit
+  -- before joining, so LIMIT N returns N distinct units.
+  WITH amenity AS (
+    SELECT unit_number,
+           SUM(amount) AS amenity_fee_latest_month
+    FROM rent_charge_lines
+    WHERE charge_code = 'AMENITY'
+      AND snapshot_month = (
+        SELECT MAX(snapshot_month) FROM rent_charge_lines
+      )
+    GROUP BY unit_number
+  )
+  SELECT l.unit_number,
+         l.monthly_rent,
+         l.move_out_date,
+         COALESCE(a.amenity_fee_latest_month, 0) AS amenity_fee
+  FROM leases l
+  LEFT JOIN amenity a ON a.unit_number = l.unit_number
+  ORDER BY l.unit_number
+  LIMIT 2;
+
+  -- All charge-code totals for a unit, one row per code:
+  SELECT charge_code, SUM(amount) AS total
+  FROM rent_charge_lines
+  WHERE unit_number = 'A103'
+    AND snapshot_month = (SELECT MAX(snapshot_month) FROM rent_charge_lines)
+  GROUP BY charge_code
+  ORDER BY total DESC;
+
+  -- Move-outs in a date range:
+  SELECT unit_number, tenant_id, move_out_date, monthly_rent
+  FROM leases
+  WHERE move_out_date BETWEEN '2025-10-01' AND '2026-03-31'
+  ORDER BY move_out_date;"""
         return SQL_TOOLS["execute_scoped_sql"]["fn"](scope_codes, sql)
 
     @tool
