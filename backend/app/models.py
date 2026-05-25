@@ -1,9 +1,9 @@
 """ORM models for the rent-roll domain."""
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, datetime
 from sqlalchemy import (
-    String, Integer, Float, Date, Boolean, ForeignKey, JSON, Index
+    String, Integer, Float, Date, Boolean, ForeignKey, JSON, Index, DateTime, Text
 )
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
@@ -109,3 +109,39 @@ class RentChargeLine(Base):
     __table_args__ = (
         Index("ix_charge_code_month_unit", "property_code", "snapshot_month", "unit_number"),
     )
+
+
+# ---------------------------------------------------------------------------
+# Evaluation harness — persisted alongside the rent-roll schema in Supabase
+# so the Monitoring UI can read run history without a separate datastore.
+# ---------------------------------------------------------------------------
+
+class EvalRun(Base):
+    __tablename__ = "eval_runs"
+    id:           Mapped[str] = mapped_column(String(64), primary_key=True)
+    started_at:   Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    finished_at:  Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    trigger:      Mapped[str] = mapped_column(String(32))   # manual | scheduled | cli
+    status:       Mapped[str] = mapped_column(String(16))   # running | completed | failed
+    summary:      Mapped[dict | None] = mapped_column(JSON_VARIANT, nullable=True)
+
+    cases: Mapped[list["EvalCase"]] = relationship(
+        back_populates="run", cascade="all, delete-orphan",
+    )
+
+
+class EvalCase(Base):
+    __tablename__ = "eval_cases"
+    id:            Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    run_id:        Mapped[str] = mapped_column(String(64), ForeignKey("eval_runs.id", ondelete="CASCADE"), index=True)
+    golden_id:     Mapped[str] = mapped_column(String(128))
+    property_code: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    question:      Mapped[str] = mapped_column(Text)
+    answer:        Mapped[str | None] = mapped_column(Text, nullable=True)
+    scores:        Mapped[dict | None] = mapped_column(JSON_VARIANT, nullable=True)
+    ok:            Mapped[bool] = mapped_column(Boolean, default=False)
+    error:         Mapped[str | None] = mapped_column(Text, nullable=True)
+    duration_ms:   Mapped[int | None] = mapped_column(Integer, nullable=True)
+    trace_id:      Mapped[str | None] = mapped_column(String(64), nullable=True)
+
+    run: Mapped["EvalRun"] = relationship(back_populates="cases")

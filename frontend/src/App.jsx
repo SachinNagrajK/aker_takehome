@@ -7,6 +7,7 @@ import Composer from './components/Composer.jsx'
 import Message from './components/Message.jsx'
 import ClarificationCard from './components/ClarificationCard.jsx'
 import EmptyState from './components/EmptyState.jsx'
+import Monitoring from './components/Monitoring.jsx'
 
 function genConversationId() {
   return (crypto?.randomUUID?.() || `${Date.now()}-${Math.random().toString(36).slice(2)}`)
@@ -24,6 +25,7 @@ export default function App() {
   const [lastUserMessage, setLastUserMessage] = useState('')
   const [busy, setBusy] = useState(false)
   const [bootError, setBootError] = useState(null)
+  const [view, setView] = useState('chat')  // 'chat' | 'monitoring'
   const scrollRef = useRef(null)
   // AbortController for the in-flight chat stream — lets the user click the
   // composer's Stop button (rendered when busy=true) to cancel generation.
@@ -279,6 +281,20 @@ export default function App() {
           <span className="brand-icon"><Building2 size={16} /></span>
           Aker AI
         </div>
+        <div className="nav-tabs" role="tablist" style={{ display: 'flex', gap: 6 }}>
+          <button
+            role="tab"
+            aria-selected={view === 'chat'}
+            className={`nav-tab ${view === 'chat' ? 'active' : ''}`}
+            onClick={() => setView('chat')}
+          >Chat</button>
+          <button
+            role="tab"
+            aria-selected={view === 'monitoring'}
+            className={`nav-tab ${view === 'monitoring' ? 'active' : ''}`}
+            onClick={() => setView('monitoring')}
+          >Monitoring</button>
+        </div>
         <PropertySelector
           properties={properties}
           value={propertyCodes}
@@ -304,6 +320,9 @@ export default function App() {
       </div>
 
       <div className="main">
+        {view === 'monitoring' ? (
+          <Monitoring />
+        ) : (
         <div className="chat">
           <div className="messages" ref={scrollRef}>
             <div className="messages-inner">
@@ -333,6 +352,7 @@ export default function App() {
             />
           </div>
         </div>
+        )}
       </div>
     </div>
   )

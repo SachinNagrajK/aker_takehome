@@ -1185,3 +1185,19 @@ select:focus, input:focus, textarea:focus {
   .image-grid { grid-template-columns: repeat(auto-fill, minmax(130px, 1fr)); }
   .empty-state h2 { font-size: 22px; }
 }
+
+/* ===== Nav tabs (Chat / Monitoring) ===== */
+.nav-tabs .nav-tab {
+  background: transparent;
+  border: 1px solid var(--border, #ddd);
+  padding: 4px 10px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 13px;
+  color: var(--text, inherit);
+}
+.nav-tabs .nav-tab.active {
+  background: var(--accent, #222);
+  color: #fff;
+  border-color: var(--accent, #222);
+}

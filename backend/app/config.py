@@ -72,6 +72,25 @@ class Settings:
     backend_host: str = os.getenv("BACKEND_HOST", "0.0.0.0")
     backend_port: int = int(os.getenv("BACKEND_PORT", "8000"))
 
+    # Observability — Phoenix Cloud (hosted, free tier). Defaults off so the
+    # app still boots when keys aren't set. Set PHOENIX_ENABLED=true and
+    # PHOENIX_API_KEY in prod env. Export is non-blocking (BatchSpanProcessor
+    # ships spans from a background thread).
+    phoenix_enabled: bool = (os.getenv("PHOENIX_ENABLED", "false").strip().lower() == "true")
+    phoenix_endpoint: str = os.getenv("PHOENIX_ENDPOINT", "https://app.phoenix.arize.com/s/aker-ai/v1/traces")
+    phoenix_api_key: str | None = os.getenv("PHOENIX_API_KEY") or None
+    phoenix_project_name: str = os.getenv("PHOENIX_PROJECT_NAME", "property-ai")
+
+    # Evaluation harness — never runs inline on /chat. Manual via UI/API,
+    # or scheduled via APScheduler. open_rag_eval judge model.
+    eval_judge_model: str = os.getenv("EVAL_JUDGE_MODEL", "gpt-4o-mini")
+    eval_schedule_enabled: bool = (os.getenv("EVAL_SCHEDULE_ENABLED", "false").strip().lower() == "true")
+    eval_schedule_cron: str = os.getenv("EVAL_SCHEDULE_CRON", "0 */6 * * *")
+    eval_max_cases: int = int(os.getenv("EVAL_MAX_CASES", "50"))
+    # Eval runs are persisted to Supabase Postgres (via SQLAlchemy / app.db).
+    # Local JSONL snapshots are still written for grep-friendly debugging.
+    eval_results_dir: str = os.getenv("EVAL_RESULTS_DIR", str(_BACKEND_DIR / "evals" / "results"))
+
     @property
     def sqlalchemy_url(self) -> str:
         return self.database_url

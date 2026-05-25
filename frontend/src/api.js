@@ -77,10 +77,27 @@ async function chatStream(body, { onEvent, signal } = {}) {
   }
 }
 
+// Admin-protected eval endpoints. Caller passes the admin token; we stash it
+// in the X-Admin-Token header. Token is held in sessionStorage by the UI.
+const adminHeaders = (token) => (token ? { 'X-Admin-Token': token } : {})
+
 export const api = {
   health:     () => json('/health'),
   properties: () => json('/properties'),
   llms:       () => json('/llms'),
   chat:       (body) => json('/chat', { method: 'POST', body: JSON.stringify(body) }),
   chatStream,
+
+  evals: {
+    golden:     (token) => json('/evals/golden', { headers: adminHeaders(token) }),
+    listRuns:   (token, limit = 50) => json(`/evals/runs?limit=${limit}`, { headers: adminHeaders(token) }),
+    getRun:     (token, id) => json(`/evals/runs/${id}`, { headers: adminHeaders(token) }),
+    triggerRun: (token, body = {}) => json('/evals/runs', {
+      method: 'POST', headers: adminHeaders(token), body: JSON.stringify(body),
+    }),
+    getSchedule: (token) => json('/evals/schedule', { headers: adminHeaders(token) }),
+    putSchedule: (token, cron) => json('/evals/schedule', {
+      method: 'PUT', headers: adminHeaders(token), body: JSON.stringify({ cron }),
+    }),
+  },
 }

@@ -1,0 +1,107 @@
+# Curated regression set. Each case is one chat turn against a known property.
+# `expected_substrings` are loose checks (case-insensitive) used as a smoke
+# signal alongside open_rag_eval's LLM-judge scores.
+cases:
+  - id: 115r-summary
+    property_code: 115r
+    question: "Give me a summary of this property."
+    expected_substrings: ["unit"]
+    expected_tools: ["get_property_summary"]
+
+  - id: 115r-unit-mix
+    property_code: 115r
+    question: "What is the unit mix?"
+    expected_substrings: ["bedroom"]
+    expected_tools: ["get_unit_mix"]
+
+  - id: 115r-occupancy
+    property_code: 115r
+    question: "What is the current occupancy?"
+    expected_substrings: ["%"]
+    expected_tools: ["get_occupancy"]
+
+  - id: 115r-expiring
+    property_code: 115r
+    question: "List leases expiring in the next 90 days."
+    expected_substrings: []
+    expected_tools: ["get_expiring_leases"]
+
+  - id: 115r-top-balances
+    property_code: 115r
+    question: "Who are the top outstanding balances?"
+    expected_substrings: []
+    expected_tools: ["get_top_balances"]
+
+  - id: 115r-amenities
+    property_code: 115r
+    question: "What amenities does this property offer?"
+    expected_substrings: []
+    expected_tools: ["search_property_pages"]
+
+  - id: 115r-gym-photos
+    property_code: 115r
+    question: "Show me photos of the gym."
+    expected_substrings: []
+    expected_tools: ["search_property_pages"]
+
+  - id: 115r-floor-plans
+    property_code: 115r
+    question: "What floor plans are available?"
+    expected_substrings: []
+    expected_tools: ["search_property_pages"]
+
+  - id: 126r-summary
+    property_code: 126r
+    question: "Give me a summary of this property."
+    expected_substrings: ["unit"]
+    expected_tools: ["get_property_summary"]
+
+  - id: 126r-unit-mix
+    property_code: 126r
+    question: "Break down the unit mix."
+    expected_substrings: ["bedroom"]
+    expected_tools: ["get_unit_mix"]
+
+  - id: 126r-occupancy
+    property_code: 126r
+    question: "What is the occupancy rate?"
+    expected_substrings: ["%"]
+    expected_tools: ["get_occupancy"]
+
+  - id: 126r-rent-trend
+    property_code: 126r
+    question: "Show me the rent trend over the last 6 months."
+    expected_substrings: []
+    expected_tools: ["get_rent_trend"]
+
+  - id: 126r-amenities
+    property_code: 126r
+    question: "What amenities are available?"
+    expected_substrings: []
+    expected_tools: ["search_property_pages"]
+
+  - id: 126r-neighborhood
+    property_code: 126r
+    question: "Tell me about the neighborhood."
+    expected_substrings: []
+    expected_tools: ["search_property_pages"]
+
+  - id: 126r-pool-photo
+    property_code: 126r
+    question: "Do you have a photo of the pool?"
+    expected_substrings: []
+    expected_tools: ["search_property_pages"]
+
+  - id: 115r-out-of-scope-stock
+    property_code: 115r
+    question: "What is the current price of AAPL stock?"
+    expected_substrings: []
+    expected_tools: []
+    notes: "out of scope — should refuse or redirect"
+
+  - id: 115r-out-of-scope-other-property
+    property_code: 115r
+    question: "How does The Hamlet at Saratoga Springs compare?"
+    expected_substrings: []
+    expected_tools: []
+    notes: "scope-violation — assistant should stay on 115r"

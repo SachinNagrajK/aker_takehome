@@ -17,6 +17,9 @@ from __future__ import annotations
 from typing import Any
 
 from ..guardrails.scope import require_scope
+from ..observability import get_tracer
+
+_tracer = get_tracer("property_ai.rag")
 
 
 # Pinecone returns cosine SIMILARITY in `score` (1 = identical, -1 = opposite).
@@ -165,6 +168,13 @@ def search_property_v2(
     max_images = max(1, min(int(max_images or _DEFAULT_MAX_IMAGES), _HARD_CAP_MAX_IMAGES))
     image_query_k = min(max_images * _IMAGE_QUERY_K_MULT, 60)
 
+    # OpenInference RETRIEVER span — Phoenix renders chunks under "Retrieval".
+    span = _tracer.start_span("pinecone.query")
+    span.set_attribute("openinference.span.kind", "RETRIEVER")
+    span.set_attribute("retrieval.namespace", code)
+    span.set_attribute("retrieval.top_k", k)
+    span.set_attribute("input.value", query)
+
     from ..ingestion.v2.embedder import JinaV4Embedder
     from ..ingestion.v2.pipeline import get_index_v2
 
@@ -284,6 +294,20 @@ def search_property_v2(
             if "|" in label:
                 label = label.split("|", 1)[0].strip()
             sources.append({"label": label, "url": u})
+
+    try:
+        for i, ch in enumerate(chunks[:10]):
+            text = ch.get("text") or ""
+            span.set_attribute(f"retrieval.documents.{i}.document.id", str(ch.get("chunk_index") or i))
+            span.set_attribute(f"retrieval.documents.{i}.document.score", float(1.0 - (ch.get("distance") or 0.0)))
+            span.set_attribute(f"retrieval.documents.{i}.document.content", text[:500])
+            url = ch.get("url")
+            if url:
+                span.set_attribute(f"retrieval.documents.{i}.document.metadata.url", url)
+        span.set_attribute("retrieval.chunk_count", len(chunks))
+        span.set_attribute("retrieval.image_count", len(images))
+    finally:
+        span.end()
 
     return {
         "property_code": code,

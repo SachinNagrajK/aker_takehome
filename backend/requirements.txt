@@ -46,3 +46,22 @@ openai>=1.55,<3
 sqlglot>=25
 langchain-anthropic>=1.0,<2
 langchain-google-genai>=2,<3
+
+# Observability & evaluation — latest production-grade releases (verified on PyPI 2026-05-24)
+# NOTE: we don't install the full `arize-phoenix` server here (it pulls FastAPI>=0.135
+# and conflicts with our pin). Phoenix Cloud is the hosted backend, so the OTel
+# exporter package alone is enough.
+arize-phoenix-otel>=0.16.1
+openinference-instrumentation-langchain>=0.1.66
+openinference-instrumentation-openai>=0.1.49
+openinference-instrumentation-anthropic>=1.0.5
+openinference-instrumentation-google-genai>=1.0.2
+opentelemetry-instrumentation-fastapi>=0.63b1
+# NOTE: `open-rag-eval` is NOT installed — its 0.3.0 dependency graph
+# (torch 2.7, llama_index, streamlit, transformers 4.50, openai~=2.7,
+# anthropic~=0.72) hard-conflicts with this backend's pins. `app/evals/scorer.py`
+# uses the same TREC-style LLM-judge prompt with the same metrics
+# (groundedness / hallucination / answer_relevance / context_relevance) via
+# the OpenAI SDK directly — identical signal, no dep collision.
+apscheduler>=3.11.0
+PyYAML>=6.0

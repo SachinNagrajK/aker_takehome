@@ -37,6 +37,8 @@ from .schemas import (
 from .guardrails.scope import UnknownPropertyError, ScopeViolationError
 from .llm_registry import ProviderUnavailable, list_llms, validate_model
 from .graph.build import run_chat, run_chat_stream
+from .observability import init_tracing, shutdown_tracing
+from .evals.api import router as evals_router
 
 log = logging.getLogger("property_ai")
 settings = get_settings()
@@ -44,8 +46,16 @@ settings = get_settings()
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
+    init_tracing(_app)
     init_db()
-    yield
+    # Eval scheduler is opt-in via EVAL_SCHEDULE_ENABLED.
+    from .evals.scheduler import start_scheduler, stop_scheduler
+    start_scheduler()
+    try:
+        yield
+    finally:
+        stop_scheduler()
+        shutdown_tracing()
 
 
 app = FastAPI(title="Property-Specific AI Assistant", version="0.1.0", lifespan=lifespan)
@@ -63,6 +73,9 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Eval & monitoring endpoints — admin-protected, never on /chat critical path.
+app.include_router(evals_router)
 
 # Image/table artifacts live in Supabase Storage (public bucket). The
 # frontend loads them directly via the fully-qualified Supabase URL that
