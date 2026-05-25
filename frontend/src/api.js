@@ -6,16 +6,40 @@
 const BASE = (import.meta.env.VITE_API_BASE || '/api').replace(/\/$/, '')
 
 async function json(path, opts = {}) {
+  // IMPORTANT: pull `headers` out of opts BEFORE spreading the rest, otherwise
+  // the spread overrides our merged header object and strips Content-Type
+  // when a caller passes their own headers (e.g. the admin token).
+  const { headers: optsHeaders, ...rest } = opts
   const r = await fetch(`${BASE}${path}`, {
-    headers: { 'Content-Type': 'application/json', ...(opts.headers || {}) },
-    ...opts,
+    ...rest,
+    headers: { 'Content-Type': 'application/json', ...(optsHeaders || {}) },
   })
   if (!r.ok) {
     let detail
     try { detail = (await r.json()).detail } catch { detail = await r.text() }
-    throw new Error(detail || `HTTP ${r.status}`)
+    throw new Error(formatErrorDetail(detail) || `HTTP ${r.status}`)
   }
   return r.json()
+}
+
+// FastAPI returns 422 with `detail` as an array of {loc, msg, type} objects.
+// new Error([{...}]) stringifies to "[object Object]" — so flatten to a
+// readable string before throwing.
+function formatErrorDetail(detail) {
+  if (!detail) return ''
+  if (typeof detail === 'string') return detail
+  if (Array.isArray(detail)) {
+    return detail.map((d) => {
+      if (typeof d === 'string') return d
+      const loc = Array.isArray(d?.loc) ? d.loc.join('.') : (d?.loc || '')
+      const msg = d?.msg || JSON.stringify(d)
+      return loc ? `${loc}: ${msg}` : msg
+    }).join('; ')
+  }
+  if (typeof detail === 'object') {
+    return detail.msg || detail.message || JSON.stringify(detail)
+  }
+  return String(detail)
 }
 
 // Streaming chat — consumes the SSE endpoint at POST /chat/stream. EventSource
