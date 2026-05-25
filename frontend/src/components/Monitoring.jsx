@@ -208,7 +208,7 @@ export default function Monitoring() {
             Select all ({golden.length})
           </label>
         </div>
-        <div style={{ maxHeight: 220, overflow: 'auto', border: '1px solid #eee', padding: 8, marginBottom: 12 }}>
+        <div style={{ maxHeight: 220, overflow: 'auto', border: '1px solid var(--border)', borderRadius: 6, padding: 8, marginBottom: 12 }}>
           {golden.map((g) => (
             <div key={g.id} style={{ display: 'flex', gap: 8, padding: 2, fontSize: 13 }}>
               <input
@@ -230,18 +230,29 @@ export default function Monitoring() {
       {/* HISTORY */}
       <section style={{ padding: 12, border: '1px solid var(--border, #ddd)', borderRadius: 8 }}>
         <h3 style={{ marginTop: 0 }}>Run history</h3>
+        <div style={{ fontSize: 12, color: 'var(--muted)', marginBottom: 10, lineHeight: 1.5 }}>
+          All four metrics are <strong style={{ color: 'var(--text-dim)' }}>0.00 – 1.00, higher is better</strong>.
+          {' '}<strong style={{ color: 'var(--text-dim)' }}>Groundedness</strong>: every claim traces to retrieved context.
+          {' '}<strong style={{ color: 'var(--text-dim)' }}>Faithfulness</strong>: 1.0 means the answer made nothing up.
+          {' '}<strong style={{ color: 'var(--text-dim)' }}>Ans-relev</strong>: the answer addresses the question.
+          {' '}<strong style={{ color: 'var(--text-dim)' }}>Ctx-relev</strong>: the retrieved chunks were useful for the question.
+        </div>
         <table style={{ width: '100%', fontSize: 13, borderCollapse: 'collapse' }}>
           <thead>
-            <tr style={{ textAlign: 'left', borderBottom: '1px solid #ccc' }}>
+            <tr style={{ textAlign: 'left', borderBottom: '1px solid var(--border-strong)' }}>
               <th>Started</th><th>Trigger</th><th>Status</th><th>Cases</th>
-              <th>Groundedness</th><th>Hallucination</th><th>Ans-relev</th><th>Ctx-relev</th><th></th>
+              <th>Groundedness</th>
+              <th title="1.0 = no hallucinations. Stored as `hallucination` in the API; the display name avoids the inverted-reading confusion.">Faithfulness</th>
+              <th>Ans-relev</th>
+              <th>Ctx-relev</th>
+              <th></th>
             </tr>
           </thead>
           <tbody>
             {runs.map((r) => {
               const s = r.summary || {}
               return (
-                <tr key={r.id} style={{ borderBottom: '1px solid #eee', cursor: 'pointer' }}
+                <tr key={r.id} style={{ borderBottom: '1px solid var(--border)', cursor: 'pointer' }}
                     onClick={() => openRun(r.id)}>
                   <td>{fmtTime(r.started_at)}</td>
                   <td>{r.trigger}</td>
@@ -271,7 +282,7 @@ export default function Monitoring() {
 
 function RunDetail({ run, onClose }) {
   return (
-    <div style={{ marginTop: 16, padding: 12, background: '#fafafa', borderRadius: 6 }}>
+    <div style={{ marginTop: 16, padding: 12, background: 'var(--panel)', border: '1px solid var(--border)', borderRadius: 6, color: 'var(--text)' }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
         <h4 style={{ margin: 0 }}>Run {run.id.slice(0, 8)} · {run.trigger}</h4>
         <button onClick={onClose}>Close</button>
@@ -281,9 +292,12 @@ function RunDetail({ run, onClose }) {
       </div>
       <table style={{ width: '100%', fontSize: 12, borderCollapse: 'collapse', marginTop: 8 }}>
         <thead>
-          <tr style={{ textAlign: 'left', borderBottom: '1px solid #ccc' }}>
+          <tr style={{ textAlign: 'left', borderBottom: '1px solid var(--border-strong)' }}>
             <th>Case</th><th>Property</th><th>OK</th>
-            <th>G</th><th>H</th><th>AR</th><th>CR</th>
+            <th title="Groundedness">G</th>
+            <th title="Faithfulness (1.0 = no hallucinations)">F</th>
+            <th title="Answer relevance">AR</th>
+            <th title="Context relevance">CR</th>
             <th>Trace</th>
           </tr>
         </thead>
@@ -291,17 +305,41 @@ function RunDetail({ run, onClose }) {
           {(run.cases || []).map((c) => {
             const s = c.scores || {}
             return (
-              <tr key={c.golden_id} style={{ borderBottom: '1px solid #eee', verticalAlign: 'top' }}>
+              <tr key={c.golden_id} style={{ borderBottom: '1px solid var(--border)', verticalAlign: 'top' }}>
                 <td>
                   <div><code>{c.golden_id}</code></div>
                   <div style={{ color: 'var(--muted)' }}>{c.question}</div>
                   {c.answer && (
                     <details style={{ marginTop: 4 }}>
                       <summary style={{ cursor: 'pointer', color: 'var(--muted)' }}>answer</summary>
-                      <pre style={{ whiteSpace: 'pre-wrap', maxHeight: 200, overflow: 'auto' }}>{c.answer}</pre>
+                      <pre style={{
+                        whiteSpace: 'pre-wrap',
+                        maxHeight: 200,
+                        overflow: 'auto',
+                        background: 'var(--bg-elev)',
+                        color: 'var(--text)',
+                        border: '1px solid var(--border)',
+                        borderRadius: 4,
+                        padding: 8,
+                        margin: '4px 0',
+                        fontFamily: '"JetBrains Mono", ui-monospace, monospace',
+                        fontSize: 12,
+                      }}>{c.answer}</pre>
                     </details>
                   )}
-                  {c.error && <div style={{ color: '#c53030' }}>{c.error}</div>}
+                  {c.error && <div style={{ color: 'var(--danger)' }}>{c.error}</div>}
+                  {(() => {
+                    const issues = (c.scores && c.scores.issues) || []
+                    if (!issues.length) return null
+                    return (
+                      <div style={{ marginTop: 6, padding: 8, background: 'var(--bg-elev)', border: '1px solid var(--border)', borderRadius: 4, fontSize: 12 }}>
+                        <div style={{ color: 'var(--accent)', fontWeight: 600, marginBottom: 4 }}>Judge issues:</div>
+                        <ul style={{ margin: 0, paddingLeft: 18, color: 'var(--text-dim)' }}>
+                          {issues.map((it, i) => <li key={i}>{it}</li>)}
+                        </ul>
+                      </div>
+                    )
+                  })()}
                 </td>
                 <td>{c.property_code}</td>
                 <td>{c.ok ? '✓' : '✗'}</td>
