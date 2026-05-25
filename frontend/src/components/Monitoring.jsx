@@ -22,7 +22,12 @@ function scoreColor(v) {
 }
 
 export default function Monitoring() {
+  // `token` is the committed value used for API calls. `tokenDraft` is what
+  // the input is bound to — promoted to `token` only on form submit so we
+  // don't hit /evals/* on every keystroke (which 401s on a partial token
+  // and used to spam errors).
   const [token, setToken] = useState(() => sessionStorage.getItem(TOKEN_KEY) || '')
+  const [tokenDraft, setTokenDraft] = useState(() => sessionStorage.getItem(TOKEN_KEY) || '')
   const [golden, setGolden] = useState([])
   const [selectedIds, setSelectedIds] = useState([])
   const [runs, setRuns] = useState([])
@@ -49,7 +54,15 @@ export default function Monitoring() {
       setSchedule(s)
       setCronDraft(s.cron || '')
     } catch (e) {
-      setErr(e.message)
+      // 401 here means the saved token is stale — drop it back to the
+      // login view instead of showing a noisy error.
+      if (/401|Invalid admin token/i.test(e.message || '')) {
+        sessionStorage.removeItem(TOKEN_KEY)
+        setToken('')
+        setErr('Saved token rejected. Re-enter it.')
+      } else {
+        setErr(e.message)
+      }
     }
   }, [token])
 
@@ -66,14 +79,18 @@ export default function Monitoring() {
 
   async function saveToken(e) {
     e.preventDefault()
-    sessionStorage.setItem(TOKEN_KEY, token)
-    await refresh()
+    const t = (tokenDraft || '').trim()
+    if (!t) return
+    sessionStorage.setItem(TOKEN_KEY, t)
+    setToken(t)            // triggers refresh() via the useEffect on `token`
   }
 
   function clearToken() {
     sessionStorage.removeItem(TOKEN_KEY)
     setToken('')
+    setTokenDraft('')
     setGolden([]); setRuns([]); setSchedule(null)
+    setErr(null)
   }
 
   async function triggerRun() {
@@ -127,11 +144,12 @@ export default function Monitoring() {
           <input
             type="password"
             placeholder="X-Admin-Token"
-            value={token}
-            onChange={(e) => setToken(e.target.value)}
+            value={tokenDraft}
+            onChange={(e) => setTokenDraft(e.target.value)}
+            autoComplete="off"
             style={{ flex: 1, padding: 8 }}
           />
-          <button type="submit">Save</button>
+          <button type="submit" disabled={!tokenDraft.trim()}>Save</button>
         </form>
         {err && <div className="error" style={{ marginTop: 12 }}>{err}</div>}
       </div>
