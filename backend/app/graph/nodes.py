@@ -279,7 +279,20 @@ def _build_tools(scope: ScopeDecision):
 
     @tool
     def get_move_outs(since: str | None = None, until: str | None = None, property_code: str | None = None) -> dict:
-        """Leases with a Move Out date set, optionally filtered by date range (YYYY-MM-DD). Use for 'who is moving out this quarter?' or 'show move-outs since 2026-01-01'. In compare mode pass `property_code`."""
+        """Leases with a Move Out date set, optionally filtered by date range.
+
+DO NOT invent date filters for vague language. Pass `since`/`until` ONLY if the
+user wrote an EXPLICIT calendar reference (a year, a month-name, a quarter, or
+a literal date like '2026-01-01').
+
+  - "who is moving out soon?"             → call with NO args (returns all)
+  - "list 3 units moving out soon"        → call with NO args (returns all, agent picks 3)
+  - "any tenants moving out?"             → call with NO args
+  - "moving out this quarter"             → infer since/until of the CURRENT quarter
+  - "moving out after January 2026"       → since='2026-01-01'
+  - "moving out between Jan and Mar 2026" → since='2026-01-01', until='2026-03-31'
+
+Both args are YYYY-MM-DD strings. In compare mode pass `property_code`."""
         c = _pick_code(property_code)
         if isinstance(c, dict): return c
         return SQL_TOOLS["get_move_outs"]["fn"](c, since=since, until=until)
@@ -295,7 +308,20 @@ def _build_tools(scope: ScopeDecision):
 
     @tool
     def compare_units(unit_numbers: list[str], dimensions: list[str] | None = None, property_code: str | None = None) -> dict:
-        """Side-by-side comparison of 2+ units WITHIN ONE property. dimensions can include rent, sqft, market_rent, balance, bedrooms, bathrooms. In compare mode pass `property_code` to pick which property."""
+        """Side-by-side comparison of 2+ units WITHIN ONE property.
+
+Dimensions: rent | monthly_rent | market_rent | sqft | balance | bedrooms | bathrooms.
+
+Numbers reflect the LATEST snapshot only (the `leases` / `units` tables).
+ALWAYS state that in your reply (e.g. "as of the latest snapshot").
+
+NULL handling: if a returned value is null (e.g. `monthly_rent` is often null
+for units on notice / vacant / pending move-out) you MUST call that out
+explicitly in your reply — say "monthly rent is not recorded for unit X
+(notice status)" rather than leaving it as a silent gap. The chart drops
+all-null dimensions automatically so users don't see empty bars.
+
+In compare mode pass `property_code` to pick which property."""
         c = _pick_code(property_code)
         if isinstance(c, dict): return c
         return SQL_TOOLS["compare_units"]["fn"](

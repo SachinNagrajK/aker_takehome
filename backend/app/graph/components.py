@@ -139,19 +139,32 @@ def from_expiring_leases(r: dict[str, Any]) -> list[dict]:
 
 
 def from_compare_units(r: dict[str, Any]) -> list[dict]:
-    """Grouped bar chart for intra-property unit-vs-unit comparison."""
+    """Grouped bar chart for intra-property unit-vs-unit comparison.
+
+    Drops any dimension whose values are all-null across every unit so the
+    chart doesn't render an invisible axis (the rent-roll source can have
+    `monthly_rent` null on notice/move-out units, which previously surfaced
+    as a "rent" column with no bars and no explanation).
+    """
     series = r.get("series") or []
     rows = r.get("rows") or []
     unit_numbers = r.get("unit_numbers") or [row["unit_number"] for row in rows]
     if not series or not unit_numbers:
         return []
-    # Recharts expects an array of objects keyed by category.
+
     chart_rows = []
     for s in series:
+        vals = s.get("values") or {}
+        # Skip dimensions where every unit returned null/empty — empty bars
+        # look like a bug to users even when the data simply isn't there.
+        if not any(v is not None for v in vals.values()):
+            continue
         row = {"dimension": s["dimension"]}
         for u in unit_numbers:
-            row[u] = s["values"].get(u)
+            row[u] = vals.get(u)
         chart_rows.append(row)
+    if not chart_rows:
+        return []
     return [{
         "type": "comparison_chart",
         "title": "Unit Comparison",
