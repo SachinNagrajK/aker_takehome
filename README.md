@@ -212,8 +212,23 @@ See [`backend/.env.example`](backend/.env.example) for the full list.
 - *SSE over WebSockets* — one-way is enough for chat and survives every reverse proxy we tested.
 - *LLM-as-judge for evals* — cheap and comparable, but can self-collude with same-family models; the 0.25-step rubric + concrete-issue requirement + default-to-0.75 mitigate.
 - *APScheduler in-process* — simple, but shares the FastAPI VM; a dedicated worker is the next step if eval runs ever compete with request traffic.
+- *Properties with no per-unit rent retained in the dropdown* — 8 of 22 properties (`153a`, `153r`, `175r`, `176r`, `183a`, `183r`, `184r`, `185r`) have **zero per-unit lease-charge rows** in their source rent-roll exports. I considered dropping them from the UI but kept them so the demo faithfully matches the dataset we were given. The default property is now `134r` (full data) so first-load isn't degraded; selecting one of the 8 surfaces market rent only and the agent caveats the absence.
 
 **Limitations / known gaps**
+- *Source-data gap on 8 properties.* The following 8 codes have full `properties` / `units` / `leases` / `rent_snapshots` rows BUT every lease has `monthly_rent = NULL` and zero `rent_charge_lines`, because the Aker-side rent-roll export for those properties was generated without the charge-line subdetail (only `Market Rent` totals are recorded; `Lease Charges` aggregate at the bottom of each workbook is literally `0.00`):
+
+  | Code | Property                       | Leases | RAG chunks | Per-unit rent in source? |
+  |------|--------------------------------|-------:|-----------:|:------------------------:|
+  | 153a | Abbot Mill (affordable)        |     18 |      —     | ❌                       |
+  | 153r | Abbot Mill                     |    192 |     177    | ❌                       |
+  | 175r | Kinwood Apartments             |    358 |     228    | ❌                       |
+  | 176r | The Alexander                  |    262 |     267    | ❌                       |
+  | 183a | Luckey Platt (affordable)      |     24 |      —     | ❌                       |
+  | 183r | Luckey Platt                   |    105 |     253    | ❌                       |
+  | 184r | Lakeshore Preserve             |    134 |     219    | ❌                       |
+  | 185r | Waterfront at the Strand       |     58 |     282    | ❌                       |
+
+  Verified by reading the raw `.xls` files: e.g. `Dec_RENT_ROLL_WITH_LEASE_CHARGES_175r.xls` line 1091 shows `Totals: Market Rent 771,397.00, Lease Charges 0.00`. `validate_ingestion.py` confirms 300/300 workbooks ingested with zero mismatches across 94,584 charge-line rows — there were simply no charge lines to extract for these 8 properties. For comparison, `115r`, `134r`, `462a` and other "full-data" properties have RENT/PETFEEM/AMENITY/PARKING/TRASH charge codes per unit.
 - No auth on `/chat`; the deployed URL is shared by obscurity. `ADMIN_TOKEN` guards `/admin/*` and `/evals/*` only.
 - Golden set is hand-curated (~10 cases) — broader coverage and adversarial cases are the obvious next step.
 - RAG quality depends on what was ingested per property; the agent falls back to SQL and says so when a page wasn't ingested.
