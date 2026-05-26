@@ -117,7 +117,7 @@ Or ingest a single property on demand:
 ```bash
 curl -X POST http://localhost:8000/admin/ingest \
   -H "X-Admin-Token: $ADMIN_TOKEN" -H "Content-Type: application/json" \
-  -d '{"property_code":"115r","urls":["https://example.com/property-page"]}'
+  -d '{"property_code":"134r","urls":["https://example.com/property-page"]}'
 ```
 
 Pipeline per URL: docling extract → structure-aware chunker → save images/tables to Supabase Storage → embed (text + image) via HF-hosted Jina-CLIP-v2 → upsert into Pinecone (`property-chunks-v2`).
@@ -160,14 +160,16 @@ Open <http://localhost:5173>. Vite proxies `/api/*` to the FastAPI backend.
 
 ### Smoke-test queries
 
-The app loads with `175r` (Kinwood Apartments) preselected — it has both structured rent-roll data (358 units, the largest in the portfolio) and RAG-ingested marketing content, so every tool path is exercised by default. Try:
+The app loads with `134r` (Fifty-Five Riverwalk Place) preselected — it has 99 % per-unit rent coverage in source AND the largest RAG corpus (292 chunks), so every tool path is exercised cleanly by default. Try:
 
-- *"Give me a summary of this property."* — exercises `get_property_summary`.
+- *"Give me a summary of this property."* — exercises `get_property_summary` (KPIs).
 - *"Show the rent trend over the last 12 months."* — exercises `get_rent_trend` + `render_chart`.
 - *"List leases expiring in the next 90 days."* — exercises `get_expiring_leases`.
-- *"What amenities does this property offer?"* — exercises `search_property_pages` (RAG).
-- *"Show me photos of the pool."* — exercises the multimodal image retrieval.
-- *"What's the occupancy?"* after clearing the property selection — triggers a clarification.
+- *"Compare any two units."* — exercises `list_units` → `compare_units` → `render_chart`.
+- *"What amenities does this property offer? Show a few photos."* — exercises `search_property_pages` (RAG + multimodal image retrieval).
+- *"Who is moving out soon?"* — exercises `get_move_outs`.
+- *"What's the occupancy?"* with no property selected — triggers a property-scope clarification.
+- *"Which units have the highest balance?"* — triggers a time-scope clarification (latest vs specific month).
 
 ### Key env vars
 
