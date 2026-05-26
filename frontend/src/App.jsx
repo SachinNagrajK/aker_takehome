@@ -37,7 +37,16 @@ export default function App() {
         const [props, llmList] = await Promise.all([api.properties(), api.llms()])
         setProperties(props)
         setLlms(llmList)
-        if (props.length) setPropertyCodes([props[0].property_code])
+        if (props.length) {
+          // Default to a property that has BOTH structured rent-roll data AND
+          // RAG-ingested marketing content, so a reviewer's first question
+          // exercises every path. `175r` (Kinwood Apartments, 358 units) is
+          // the largest property and is one of the 10 RAG-ingested codes.
+          // Fall back to the first available if the preferred one isn't loaded.
+          const PREFERRED_DEFAULT = '175r'
+          const pick = props.find((p) => p.property_code === PREFERRED_DEFAULT) || props[0]
+          setPropertyCodes([pick.property_code])
+        }
         const firstAvail = llmList.find((l) => l.available)
         if (firstAvail) setLlm({ provider: firstAvail.provider, model: firstAvail.models[0] })
       } catch (e) {

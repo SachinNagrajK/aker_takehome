@@ -22,7 +22,7 @@ container that HF Spaces runs continuously.
 - **Structured data** — Supabase Postgres (Session Pooler)
 - **Vector store** — Pinecone serverless (`property-chunks-v2`, namespace per property)
 - **Image / table artifacts** — Supabase Storage public bucket (`doc-store`)
-- **Embeddings** — Jina-CLIP-v2 ONNX, computed in-process on this container
+- **Embeddings** — Jina-CLIP-v2 called via Hugging Face (no local model download)
 - **LLMs** — OpenAI / Anthropic / Google Gemini (keys set as Space Secrets)
 
 ## Endpoints
