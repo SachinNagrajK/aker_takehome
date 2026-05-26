@@ -1,4 +1,4 @@
-# Property-Specific AI Assistant
+# Aker Property AI Assistant
 
 A chatbot scoped to a single property code (e.g. `115r`) that fuses:
 
