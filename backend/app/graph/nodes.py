@@ -312,6 +312,20 @@ Both args are YYYY-MM-DD strings. In compare mode pass `property_code`."""
 
 Dimensions: rent | monthly_rent | market_rent | sqft | balance | bedrooms | bathrooms.
 
+CRITICAL — never invent unit numbers. Unit IDs vary wildly by property
+(e.g. 175r uses LV01A-style codes, 115r uses A103-style, 134r uses S01-style).
+If the user did NOT specify exact unit numbers — e.g. "compare any 2 units",
+"pick 2 units and compare", "compare a couple of units" — you MUST first call
+list_units(property_code=…, occupied=True, limit=10) to get REAL unit numbers
+WITH active leases, then pick TWO from the returned rows that have non-null
+`monthly_rent`. Don't pick units on notice / pending move-out (rent and lease
+fields are often null for those — the comparison will be empty and useless).
+THEN call compare_units with those real, data-rich values.
+
+Calling compare_units with non-existent unit numbers returns an error and
+you'll have to redo it. Calling it with notice-status units returns null
+monthly_rent and you'll have to caveat your answer.
+
 Numbers reflect the LATEST snapshot only (the `leases` / `units` tables).
 ALWAYS state that in your reply (e.g. "as of the latest snapshot").
 

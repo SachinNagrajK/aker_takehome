@@ -701,6 +701,24 @@ def compare_units(
     found_units = {r["unit_number"] for r in rows}
     missing = [u for u in unit_numbers if u not in found_units]
 
+    # Hard fail when EVERY requested unit is missing. Without this, the LLM
+    # would silently get `rows=[]` and `series=[{values: {}}]`, then narrate
+    # a fake comparison. Returning an `error` forces the agent to redo the
+    # call with real unit numbers (it should `list_units` first when the
+    # user says "any N units").
+    if not rows:
+        return {
+            "property_code": code,
+            "error": (
+                f"None of the requested units {unit_numbers!r} exist in property {code!r}. "
+                f"Call list_units(property_code={code!r}, limit=N) first to get real "
+                f"unit numbers from this property, then call compare_units again with "
+                f"two of those values."
+            ),
+            "missing": missing,
+            "unit_numbers": unit_numbers,
+        }
+
     # Reshape for charting: list of {dimension: {unit_number: value}}.
     series = []
     for dim in dims:

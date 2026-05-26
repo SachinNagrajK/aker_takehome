@@ -39,11 +39,13 @@ export default function App() {
         setLlms(llmList)
         if (props.length) {
           // Default to a property that has BOTH structured rent-roll data AND
-          // RAG-ingested marketing content, so a reviewer's first question
-          // exercises every path. `175r` (Kinwood Apartments, 358 units) is
-          // the largest property and is one of the 10 RAG-ingested codes.
-          // Fall back to the first available if the preferred one isn't loaded.
-          const PREFERRED_DEFAULT = '175r'
+          // RAG-ingested marketing content. 134r (Fifty-Five Riverwalk Place)
+          // has the largest RAG corpus (292 chunks) AND 99% monthly_rent
+          // coverage in source — every capability (SQL, RAG, charts, photos)
+          // exercises cleanly on first load. The previous default 175r had
+          // 0% monthly_rent in source so rent comparisons rendered as empty
+          // charts, which looked like a bug.
+          const PREFERRED_DEFAULT = '134r'
           const pick = props.find((p) => p.property_code === PREFERRED_DEFAULT) || props[0]
           setPropertyCodes([pick.property_code])
         }
