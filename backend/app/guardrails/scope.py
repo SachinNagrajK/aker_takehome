@@ -82,7 +82,9 @@ def validate_property_code(property_code: str) -> tuple[str, str]:
 # "abc115ra". We do NOT require leading/trailing whitespace because users
 # write things like "115r's amenities" or "(115r)".
 _CODE_PATTERN = re.compile(
-    r"\b(?:\d{3}(?:r|a|c|land)|altapm)\b",
+    # Lookbehind/ahead reject codes embedded inside larger tokens like
+    # "section-115r-A" or "id_115ra". A code must sit at a real boundary.
+    r"(?<![\w-])(?:\d{3}(?:r|a|c|land)|altapm)(?![\w-])",
     re.IGNORECASE,
 )
 
@@ -335,34 +337,48 @@ def resolve_scope(
 ) -> ScopeDecision:
     """Combine dropdown + message into one ScopeDecision.
 
-    Smart resolution rules:
+    Resolution rules (single-property only — cross-property compare is OFF):
 
-      - Union of dropdown codes + message-mentioned codes (deduped, ordered)
-      - 2+ codes -> `compare`
-      - 1 code   -> `single`
-      - 0 codes  -> `missing` (ask user)
+      - If dropdown is set AND the message references a DIFFERENT code
+        → `conflict`  (clarify interrupt asks the user which to use)
+      - Dropdown set, message has no extra code        → `single` (dropdown)
+      - No dropdown, message has exactly one code      → `single` (query)
+      - No dropdown, message has 2+ codes              → `conflict`
+      - Nothing anywhere                               → `missing`
 
-    Dropdown + message disagreement is no longer a conflict — we now treat
-    "I'm scoped to X but asking about Y" as a request to consider both.
-    The user explicitly controls multi-scope via the multi-select dropdown.
+    Compare mode is intentionally never auto-promoted: the assignment is
+    strictly one property at a time, so any ambiguity must be resolved by
+    the user via the clarify node.
     """
     msg_codes = extract_codes_from_message(message)
     dropdown_codes = _normalize_dropdown(dropdown_code)
 
-    union: list[str] = []
-    for c in dropdown_codes + msg_codes:
-        if c not in union:
-            union.append(c)
+    # Conflict: dropdown set but message mentions a different code.
+    if dropdown_codes:
+        extra = [c for c in msg_codes if c not in dropdown_codes]
+        if extra:
+            return ScopeDecision(
+                kind="conflict",
+                dropdown_code=dropdown_codes[0],
+                query_code=extra[0],
+            )
+        # Dropdown wins. (Multi-select dropdown is no longer supported in the
+        # UI but be defensive: collapse to the first valid code.)
+        return ScopeDecision(
+            kind="single", code=dropdown_codes[0], source="dropdown"
+        )
 
-    if len(union) >= 2:
-        source = "query" if msg_codes and not dropdown_codes else "dropdown"
-        return ScopeDecision(kind="compare", codes=union, source=source)
-
-    if len(union) == 1:
-        code = union[0]
-        if msg_codes and not dropdown_codes:
-            return ScopeDecision(kind="single", code=code, source="query")
-        return ScopeDecision(kind="single", code=code, source="dropdown")
+    # No dropdown — rely on the message.
+    if len(msg_codes) >= 2:
+        # Ambiguous: ask the user which property they meant.
+        return ScopeDecision(
+            kind="conflict",
+            dropdown_code=None,
+            query_code=msg_codes[0],
+            available=msg_codes,
+        )
+    if len(msg_codes) == 1:
+        return ScopeDecision(kind="single", code=msg_codes[0], source="query")
 
     return ScopeDecision(
         kind="missing",

@@ -634,6 +634,38 @@ def _build_system_prompt(state: ChatState) -> str:
     )
     if scope.get("kind") == "single" and state.get("property_name"):
         base += f"Active property name: {state['property_name']}.\n"
+
+    # ---- HARD REFUSAL: stay in domain + stay in scope ---------------------
+    # The agent must refuse two classes of question outright:
+    #   (a) Anything not about property management for the active property
+    #       (general knowledge, math, coding, weather, jokes, etc.)
+    #   (b) Questions about a DIFFERENT property than the active one.
+    # The clarify node already catches dropdown/message disagreements, but
+    # if a user asks "what about <other property>?" in a follow-up turn the
+    # graph won't re-clarify — this prompt rule covers that case.
+    _refusal_target = state.get("property_name") or scope.get("code") or "the active property"
+    _active_codes = (
+        [scope.get("code")] if scope.get("kind") == "single" and scope.get("code")
+        else (scope.get("codes") or [])
+    )
+    base += (
+        "\nHARD REFUSAL RULES — non-negotiable:\n"
+        f"  - You ONLY answer questions about {_refusal_target}"
+        f" (property code(s): {_active_codes}).\n"
+        "  - If the user asks about ANY other property, or about a topic "
+        "unrelated to this property's rent roll / units / leases / residents "
+        "/ charges / amenities / floor plans / marketing site, you MUST "
+        "reply with EXACTLY this one sentence and call no tools:\n"
+        f"      I can only answer questions about {_refusal_target}. "
+        "Please rephrase your question or switch the active property in the dropdown.\n"
+        "  - Do not be 'helpful' by partially answering off-scope questions, "
+        "do not provide world knowledge, do not write code, do not do math "
+        "puzzles. Refuse and stop.\n"
+        "  - Greetings ('hi', 'thanks') are fine — respond briefly and "
+        "invite a property question.\n"
+    )
+    # -----------------------------------------------------------------------
+
     # DISABLED: cross-property compare mode (kept commented out so the code is
     # easy to restore by uncommenting). The frontend no longer lets users
     # select multiple properties, so scope.kind == "compare" should not occur
@@ -901,21 +933,27 @@ def clarify(state: ChatState) -> dict[str, Any]:
     scope = state.get("scope") or {}
     kind = scope.get("kind")
 
-    # In v3 the resolver no longer emits `conflict` — dropdown+message
-    # disagreement is auto-promoted to `compare`. We still defensively
-    # handle it in case external resumes carry the old kind.
+    # Single-property mode only. `conflict` means the user mentioned a code
+    # that disagrees with the dropdown, OR mentioned 2+ codes with no
+    # dropdown set. Ask which ONE to use — never auto-merge.
     if kind == "conflict":
         q_code = scope.get("query_code")
         d_code = scope.get("dropdown_code")
-        question = (
-            f"Your message mentioned **{q_code}** but the dropdown has **{d_code}**. "
-            f"How should I scope this turn?"
-        )
-        options = [
-            f"compare {d_code} and {q_code}",  # NEW: explicit compare
-            q_code,
-            d_code,
-        ]
+        if d_code:
+            question = (
+                f"You're scoped to **{d_code}** but your message mentioned "
+                f"**{q_code}**. I only answer about one property at a time — "
+                f"which should I use for this turn?"
+            )
+            options = [d_code, q_code]
+        else:
+            available = scope.get("available") or [q_code]
+            question = (
+                f"Your message mentioned multiple properties "
+                f"({', '.join(available)}). I only answer about one property "
+                f"at a time — which one did you mean?"
+            )
+            options = available
     elif kind == "missing":
         question = (
             "Which property are you asking about? I didn't find a property "
@@ -958,12 +996,13 @@ def clarify(state: ChatState) -> dict[str, Any]:
         except UnknownPropertyError:
             continue
 
-    if len(valid) >= 2:
-        return {"scope": ScopeDecision(kind="compare", codes=valid, source="resumed").to_dict()}
-    if len(valid) == 1:
-        _, name = validate_property_code(valid[0])
+    # Single-property only — if the user's reply somehow contained multiple
+    # valid codes, take the FIRST and ignore the rest (compare mode is off).
+    if valid:
+        chosen_code = valid[0]
+        _, name = validate_property_code(chosen_code)
         return {
-            "scope": ScopeDecision(kind="single", code=valid[0], source="resumed").to_dict(),
+            "scope": ScopeDecision(kind="single", code=chosen_code, source="resumed").to_dict(),
             "property_name": name,
         }
 

@@ -137,9 +137,13 @@ def get_property_summary(property_code: str, snapshot_month: str | None = None) 
 def get_unit_mix(property_code: str) -> dict[str, Any]:
     """Breakdown by unit_type: count, avg market rent, avg sqft.
 
-    Sourced from `units` (latest snapshot) so it reflects the current mix.
+    Primary source: `units` table.
+    Fallback:       latest `rent_snapshots` row's `raw_row` JSON — used when
+                    the `units` ingestion stage didn't run (or produced 0 rows)
+                    so the question still gets answered.
     """
     code = require_scope(property_code)
+    source = "units"
     with session_scope() as s:
         rows = _rows_to_dicts(s.execute(
             text("""
@@ -155,8 +159,36 @@ def get_unit_mix(property_code: str) -> dict[str, Any]:
             """),
             {"code": code},
         ))
+
+        # Fallback — derive the mix from the latest snapshot's raw_row JSON.
+        # Useful when ingestion only populated rent_snapshots (a real failure
+        # mode we hit at demo time).
+        if not rows:
+            rows = _rows_to_dicts(s.execute(
+                text("""
+                    WITH latest AS (
+                        SELECT MAX(snapshot_month) AS m
+                        FROM rent_snapshots
+                        WHERE property_code = :code
+                    )
+                    SELECT
+                        COALESCE(raw_row ->> 'unit_type', 'unspecified')        AS unit_type,
+                        COUNT(*)                                                AS unit_count,
+                        ROUND(AVG(NULLIF(monthly_rent, 0))::numeric, 0)         AS avg_market_rent,
+                        ROUND(AVG(NULLIF((raw_row ->> 'sqft')::numeric, 0)), 0) AS avg_sqft
+                    FROM rent_snapshots, latest
+                    WHERE property_code = :code
+                      AND snapshot_month = latest.m
+                    GROUP BY 1
+                    ORDER BY unit_count DESC
+                """),
+                {"code": code},
+            ))
+            source = "rent_snapshots_fallback" if rows else "empty"
+
     return {
         "property_code": code,
+        "source": source,
         "row_count": len(rows),
         "rows": rows,
     }
