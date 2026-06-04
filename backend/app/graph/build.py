@@ -34,6 +34,7 @@ from .nodes import (
     clarify_time,
     compose,
     extract_scope,
+    refuse_off_property,
     scope_router,
     enter_turn,
     tools,
@@ -77,31 +78,28 @@ def _build():
     g.add_node("extract_scope", extract_scope)
     g.add_node("clarify", clarify)
     g.add_node("clarify_time", clarify_time)
+    g.add_node("refuse_off_property", refuse_off_property)
     g.add_node("enter_turn", enter_turn)
     g.add_node("agent", agent)
     g.add_node("tools", tools)
     g.add_node("compose", compose)
 
+    _router_targets = {
+        "clarify": "clarify",
+        "clarify_time": "clarify_time",
+        "enter_turn": "enter_turn",
+        "refuse_off_property": "refuse_off_property",
+    }
     g.add_edge(START, "extract_scope")
-    g.add_conditional_edges(
-        "extract_scope",
-        scope_router,
-        {"clarify": "clarify", "clarify_time": "clarify_time", "enter_turn": "enter_turn"},
-    )
+    g.add_conditional_edges("extract_scope", scope_router, _router_targets)
     # After the user answers the property clarification, re-dispatch through
     # the same router so an invalid reply loops back, a valid one proceeds.
-    g.add_conditional_edges(
-        "clarify",
-        scope_router,
-        {"clarify": "clarify", "clarify_time": "clarify_time", "enter_turn": "enter_turn"},
-    )
+    g.add_conditional_edges("clarify", scope_router, _router_targets)
     # Time-clarify: same idea. If the user's month reply is unparseable the
     # router lands back on "clarify_time" until they pick something valid.
-    g.add_conditional_edges(
-        "clarify_time",
-        scope_router,
-        {"clarify": "clarify", "clarify_time": "clarify_time", "enter_turn": "enter_turn"},
-    )
+    g.add_conditional_edges("clarify_time", scope_router, _router_targets)
+    # Off-property refusal is a terminal node — end the turn immediately.
+    g.add_edge("refuse_off_property", END)
 
     g.add_edge("enter_turn", "agent")
     g.add_conditional_edges(

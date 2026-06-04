@@ -917,12 +917,39 @@ def scope_router(state: ChatState) -> str:
     """Route after extract_scope. Property scope is the first gate; time
     scope is the second. Either missing → clarify."""
     kind = (state.get("scope") or {}).get("kind", "missing")
+    if kind == "off_property":
+        # Hard refusal — the user typed a different property than the
+        # dropdown. We do NOT offer a "switch" button or a clarification
+        # dialog; we just emit the canned refusal and end the turn.
+        return "refuse_off_property"
     if kind in {"conflict", "missing"}:
         return "clarify"
     time_kind = (state.get("time_scope") or {}).get("kind", "any")
     if time_kind == "missing":
         return "clarify_time"
     return "enter_turn"
+
+
+def refuse_off_property(state: ChatState) -> dict[str, Any]:
+    """Terminal node — return a fixed refusal when the user asked about a
+    property that isn't the one selected in the dropdown."""
+    scope = state.get("scope") or {}
+    dropdown = scope.get("dropdown_code") or "the active property"
+    asked = scope.get("query_code")
+    msg = (
+        f"I can only answer questions about **{dropdown}** "
+        f"(the property currently selected in the dropdown). "
+        f"You asked about **{asked}** — please switch the property "
+        f"in the dropdown if you'd like to ask about that one."
+    )
+    return {
+        "answer_markdown": msg,
+        "components": [],
+        "sources": [],
+        "route": "refused",
+        "gave_up": False,
+        "tool_history": [],
+    }
 
 
 # ---------------------------------------------------------------------------

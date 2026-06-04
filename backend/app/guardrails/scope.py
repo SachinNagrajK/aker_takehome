@@ -118,7 +118,7 @@ def extract_codes_from_message(message: str) -> list[str]:
 
 # Scope-decision union (frozen — passed across graph nodes)
 
-ScopeKind = Literal["single", "compare", "conflict", "missing"]
+ScopeKind = Literal["single", "compare", "conflict", "missing", "off_property"]
 
 
 @dataclass
@@ -353,12 +353,15 @@ def resolve_scope(
     msg_codes = extract_codes_from_message(message)
     dropdown_codes = _normalize_dropdown(dropdown_code)
 
-    # Conflict: dropdown set but message mentions a different code.
+    # Hard refusal: dropdown set but message mentions a DIFFERENT property.
+    # The user explicitly chose property X in the dropdown; asking about Y
+    # is treated as out-of-scope. No clarification dialog, no option to
+    # answer about Y — we just tell the user to switch the dropdown.
     if dropdown_codes:
         extra = [c for c in msg_codes if c not in dropdown_codes]
         if extra:
             return ScopeDecision(
-                kind="conflict",
+                kind="off_property",
                 dropdown_code=dropdown_codes[0],
                 query_code=extra[0],
             )
