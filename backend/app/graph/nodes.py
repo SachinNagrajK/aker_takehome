@@ -635,36 +635,38 @@ def _build_system_prompt(state: ChatState) -> str:
     if scope.get("kind") == "single" and state.get("property_name"):
         base += f"Active property name: {state['property_name']}.\n"
 
-    # ---- HARD REFUSAL: stay in domain + stay in scope ---------------------
-    # The agent must refuse two classes of question outright:
-    #   (a) Anything not about property management for the active property
-    #       (general knowledge, math, coding, weather, jokes, etc.)
-    #   (b) Questions about a DIFFERENT property than the active one.
-    # The clarify node already catches dropdown/message disagreements, but
-    # if a user asks "what about <other property>?" in a follow-up turn the
-    # graph won't re-clarify — this prompt rule covers that case.
+    # ---- OFF-DOMAIN REFUSAL --------------------------------------------------
+    # The guardrails layer already routes cross-property questions to a
+    # terminal refusal node BEFORE we get here, so this prompt only needs to
+    # handle questions that are entirely outside the property-management
+    # domain (general knowledge, weather, math, code, jokes, etc.).
+    #
+    # Default behaviour: ATTEMPT the question by calling the appropriate tool.
+    # Only refuse when the question has nothing to do with this property.
     _refusal_target = state.get("property_name") or scope.get("code") or "the active property"
-    _active_codes = (
-        [scope.get("code")] if scope.get("kind") == "single" and scope.get("code")
-        else (scope.get("codes") or [])
-    )
     base += (
-        "\nHARD REFUSAL RULES — non-negotiable:\n"
-        f"  - You ONLY answer questions about {_refusal_target}"
-        f" (property code(s): {_active_codes}).\n"
-        "  - If the user asks about ANY other property, or about a topic "
-        "unrelated to this property's rent roll / units / leases / residents "
-        "/ charges / amenities / floor plans / marketing site, you MUST "
-        "reply with EXACTLY this one sentence and call no tools:\n"
+        "\nDOMAIN GUARD — refuse ONLY clearly off-domain questions:\n"
+        f"  - DEFAULT: assume the user is asking about {_refusal_target} and "
+        "answer using the tools. 'tell me about this property', 'what's the "
+        "occupancy', 'show me photos', 'who's moving out', 'unit mix', "
+        "'amenities', 'fees', 'rent roll', 'compare units', etc. are ALL "
+        "in-scope — call the matching tool.\n"
+        "  - REFUSE only if the question is clearly NOT about this property's "
+        "rent roll / units / leases / residents / charges / amenities / "
+        "floor plans / marketing site. Examples that must be refused: "
+        "'what's the weather in Paris?', 'write me a poem', 'what's 2+2', "
+        "'who won the world cup?', 'help me debug this Python code'.\n"
+        "  - When you refuse, reply with EXACTLY this one sentence and call "
+        "no tools:\n"
         f"      I can only answer questions about {_refusal_target}. "
-        "Please rephrase your question or switch the active property in the dropdown.\n"
-        "  - Do not be 'helpful' by partially answering off-scope questions, "
-        "do not provide world knowledge, do not write code, do not do math "
-        "puzzles. Refuse and stop.\n"
-        "  - Greetings ('hi', 'thanks') are fine — respond briefly and "
-        "invite a property question.\n"
+        "Please ask a property-related question.\n"
+        "  - Greetings ('hi', 'thanks') — respond briefly and invite a "
+        "property question. Do NOT use the refusal sentence for greetings.\n"
+        "  - When in doubt, ATTEMPT the question with a tool. It is better "
+        "to call a tool that returns 'no data' than to wrongly refuse a "
+        "legitimate property question.\n"
     )
-    # -----------------------------------------------------------------------
+    # --------------------------------------------------------------------------
 
     # DISABLED: cross-property compare mode (kept commented out so the code is
     # easy to restore by uncommenting). The frontend no longer lets users
